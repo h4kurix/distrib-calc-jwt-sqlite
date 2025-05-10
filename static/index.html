@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calculator Client</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 400px;
+            margin: 2em auto;
+        }
+
+        input,
+        button {
+            padding: .5em;
+            margin: .2em 0;
+            width: 100%;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        #result {
+            margin-top: 1em;
+            font-weight: bold;
+        }
+
+        #auth-msg {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>Auth</h2>
+    <div id="auth">
+        <input id="username" placeholder="Username" />
+        <input id="password" type="password" placeholder="Password" />
+        <button id="btn-register">Register</button>
+        <button id="btn-login">Login</button>
+        <div id="auth-msg"></div>
+    </div>
+
+    <div id="calc" class="hidden">
+        <h2>Calc</h2>
+        <input id="expr" placeholder="e.g. 2+2*2" />
+        <button id="btn-calc">Calculate</button>
+        <button id="btn-logout">Logout</button>
+        <div id="result"></div>
+    </div>
+
+    <script>
+        const api = 'http://localhost:8080/api/v1';
+        let token = '';
+
+        function msg(el, text, err = false) {
+            el.textContent = text;
+            el.style.color = err ? 'red' : 'green';
+        }
+
+        function setCookie(name, value, days = 1) {
+            const expires = new Date(Date.now() + days * 864e5).toUTCString();
+            document.cookie = name + '=' + encodeURIComponent(value) + '; expires=' + expires + '; path=/';
+        }
+
+        function getCookie(name) {
+            return document.cookie.split('; ').reduce((r, v) => {
+                const parts = v.split('='); return parts[0] === name ? decodeURIComponent(parts[1]) : r;
+            }, '');
+        }
+
+        function deleteCookie(name) {
+            document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        }
+
+        function showCalc() {
+            document.getElementById('auth').classList.add('hidden');
+            document.getElementById('calc').classList.remove('hidden');
+            msg(document.getElementById('result'), '');
+        }
+
+        async function auth(path) {
+            const user = document.getElementById('username').value;
+            const pass = document.getElementById('password').value;
+            const res = await fetch(`${api}/${path}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: user, password: pass })
+            });
+            const data = await res.json();
+            if (res.ok && data.token) {
+                token = data.token;
+                setCookie('token', token);
+                msg(document.getElementById('auth-msg'), 'OK');
+                showCalc();
+            } else {
+                msg(document.getElementById('auth-msg'), data.error || 'Fail', true);
+            }
+        }
+
+        document.getElementById('btn-register').onclick = () => auth('register');
+        document.getElementById('btn-login').onclick = () => auth('login');
+
+        document.getElementById('btn-calc').onclick = async () => {
+            const expression = document.getElementById('expr').value;
+            document.getElementById('result').textContent = '';
+            const res = await fetch(`${api}/calculate`, {
+                method: 'POST', headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                }, body: JSON.stringify({ expression })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                msg(document.getElementById('result'), data.error || 'Error', true);
+                return;
+            }
+            const id = data.id;
+            msg(document.getElementById('result'), 'Calculating...');
+            const poll = setInterval(async () => {
+                try {
+                    const r = await fetch(`${api}/expressions/${id}`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    const { expression: exprData } = await r.json();
+                    if (exprData.status === 'completed') {
+                        clearInterval(poll);
+                        msg(document.getElementById('result'), 'Result: ' + exprData.result);
+                    } else if (exprData.status === 'error') {
+                        clearInterval(poll);
+                        msg(document.getElementById('result'), exprData.error || 'Error', true);
+                    }
+                } catch (e) {
+                    clearInterval(poll);
+                    msg(document.getElementById('result'), 'Polling error', true);
+                }
+            }, 500);
+        };
+
+        document.getElementById('btn-logout').onclick = () => {
+            deleteCookie('token');
+            document.getElementById('calc').classList.add('hidden');
+            document.getElementById('auth').classList.remove('hidden');
+            token = '';
+            msg(document.getElementById('auth-msg'), 'Logged out');
+        };
+
+        window.onload = () => {
+            const t = getCookie('token');
+            if (t) { token = t; showCalc(); }
+        };
+    </script>
+</body>
+
+</html>
