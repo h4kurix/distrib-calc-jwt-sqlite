@@ -1,0 +1,36 @@
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    env_file: .env
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - LOG_LEVEL=${LOG_LEVEL}
+    ports:
+      - "${PORT}:8080"
+    volumes:
+      - ./data:/app/data
+    networks:
+      - calc-net
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    env_file: .env
+    environment:
+      - ORCHESTRATOR_HOST=orchestrator
+      - LOG_LEVEL=${LOG_LEVEL}
+    depends_on:
+      - orchestrator
+    networks:
+      - calc-net
+    deploy:
+      replicas: ${COMPUTING_POWER}
+    restart: unless-stopped
+
+networks:
+  calc-net:
+    driver: bridge
