@@ -151,6 +151,19 @@ curl -X GET http://localhost:8080/internal/task/result/task-4dcbb147-c29b-4b66-8
     - Повторное выполнение при ошибках
 
 ### Схема взаимодействия
-<pre lang="markdown"> ```mermaid sequenceDiagram participant User participant Orchestrator participant Agent User->>Orchestrator: POST /calculate Orchestrator->>Orchestrator: Разбор выражения loop Для каждой операции Orchestrator->>Agent: Назначение задачи Agent->>Orchestrator: Результат вычисления end Orchestrator->>User: Возврат результата ``` </pre>
+```mermaid
+sequenceDiagram
+    participant User
+    participant Orchestrator
+    participant Agent
+
+    User->>Orchestrator: POST /calculate
+    Orchestrator->>Orchestrator: Разбор выражения
+    loop Для каждой операции
+        Orchestrator->>Agent: Назначение задачи
+        Agent->>Orchestrator: Результат вычисления
+    end
+    Orchestrator->>User: Возврат результата
+```
 
 
