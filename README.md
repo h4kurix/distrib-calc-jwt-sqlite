@@ -10,12 +10,11 @@
 
 ## Установка и запуск
 ```bash
-git clone https://github.com/h4kurix/distributed-calculator.git
-cd distributed-calculator
+git clone https://github.com/h4kurix/distrib-calc-jwt-sqlite
+cd distrib-calc-jwt-sqlite
 docker-compose up --build
 ```
-
-**Система будет доступна на `http://localhost:8080`**
+Система будет доступна на `http://localhost:8080`
 
 ## Запуск тестов
 ```bash
