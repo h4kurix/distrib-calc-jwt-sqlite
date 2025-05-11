@@ -15,7 +15,7 @@ cd distributed-calculator
 docker-compose up --build
 ```
 
-** Система будет доступна на `http://localhost:8080` **
+**Система будет доступна на `http://localhost:8080`**
 
 ## Запуск тестов
 ```bash
