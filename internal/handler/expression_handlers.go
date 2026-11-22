@@ -97,9 +97,10 @@ func HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/expressions/")
-	logger.Info("HandleExpressionByID: Looking for expression ID: %s", id)
+	userID := getUserIDFromContext(r.Context())
+	logger.Info("HandleExpressionByID: Looking for expression ID: %s for user: %s", id, userID)
 
-	expr, exists := store.GetExpression(id)
+	expr, exists := store.GetExpression(id, userID)
 	if !exists {
 		logger.Warn("HandleExpressionByID: Expression not found: %s", id)
 		http.Error(w, "Expression not found", http.StatusNotFound)
