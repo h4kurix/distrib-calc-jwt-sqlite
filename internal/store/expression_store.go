@@ -42,14 +42,15 @@ func NewExpression(exprText, userID string) (*Expression, error) {
 	return expr, nil
 }
 
-// GetExpression retrieves an expression by ID
-func GetExpression(id string) (*Expression, bool) {
+// GetExpression retrieves an expression by ID for the specified user.
+// A missing expression and an expression owned by another user are both reported as not found.
+func GetExpression(id, userID string) (*Expression, bool) {
 	db := database.GetDB()
 	var expr Expression
 
 	err := db.QueryRow(
-		"SELECT id, expression, status, COALESCE(result, 0), created_at FROM expressions WHERE id = ?",
-		id,
+		"SELECT id, expression, status, COALESCE(result, 0), created_at FROM expressions WHERE id = ? AND user_id = ?",
+		id, userID,
 	).Scan(&expr.ID, &expr.Expression, &expr.Status, &expr.Result, &expr.CreatedAt)
 
 	if err != nil {
