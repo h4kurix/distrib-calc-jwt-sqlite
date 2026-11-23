@@ -11,6 +11,5 @@ RUN go build -o /agent .
 FROM alpine:latest
 WORKDIR /app
 COPY --from=builder /agent ./agent
-COPY .env ./
 EXPOSE 8080
 ENTRYPOINT ["./agent"]
