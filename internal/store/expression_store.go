@@ -13,7 +13,7 @@ type Expression struct {
 	UserID     string    `json:"user_id"`
 	Expression string    `json:"expression"`
 	Status     string    `json:"status"`
-	Result     float64   `json:"result,omitempty"`
+	Result     float64   `json:"result"`
 	Error      string    `json:"error,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
@@ -27,23 +27,6 @@ func scanExpression(rows interface{ Scan(...interface{}) error }) (*Expression, 
 		return nil, err
 	}
 	return &e, nil
-}
-
-// NewExpression создаёт запись выражения.
-func NewExpression(exprText, userID string) (*Expression, error) {
-	id := fmt.Sprintf("expr-%d", time.Now().UnixNano())
-	expr := &Expression{
-		ID: id, UserID: userID, Expression: exprText,
-		Status: "pending", CreatedAt: time.Now(),
-	}
-	_, err := database.GetDB().Exec(
-		`INSERT INTO expressions (id, user_id, expression, status, created_at) VALUES (?, ?, ?, ?, ?)`,
-		expr.ID, expr.UserID, expr.Expression, expr.Status, expr.CreatedAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert expression: %w", err)
-	}
-	return expr, nil
 }
 
 // CreateExpressionWithTasks создаёт выражение и его задачи в одной транзакции.
@@ -132,4 +115,23 @@ func UpdateExpressionStatus(exprID, status string, result float64, errText strin
 		return fmt.Errorf("expression %s not found", exprID)
 	}
 	return nil
+}
+
+// ExpireStaleExpressions закрывает выражения, которые не завершились за timeout.
+// Без этого клиент опрашивает статус вечно, если агенты недоступны.
+func ExpireStaleExpressions(timeout time.Duration) (int, error) {
+	cutoff := time.Now().Add(-timeout)
+	res, err := database.GetDB().Exec(
+		`UPDATE expressions SET status = 'error', error = 'expression timed out'
+		 WHERE status IN ('pending', 'in_progress') AND created_at < ?`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("expire expressions: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("expire expressions rows: %w", err)
+	}
+	return int(n), nil
 }

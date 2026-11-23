@@ -18,7 +18,9 @@ type Node struct {
 	Priority int
 }
 
-func generateTaskID() string { return "task-" + uuid.New().String() }
+func newID(prefix string) string { return prefix + "-" + uuid.New().String() }
+
+func generateTaskID() string { return newID("task") }
 
 func getNodeReference(n *Node) string {
 	if n == nil {

@@ -20,13 +20,19 @@ func FinalizeExpression(exprID, userID string, aggregate func([]*Task) (float64,
 		}
 
 		var failed int
+		var failedErr string
 		if err := tx.QueryRow(
-			`SELECT COUNT(*) FROM tasks WHERE expression_id = ? AND status = 'error'`, exprID,
-		).Scan(&failed); err != nil {
-			return fmt.Errorf("count failed tasks: %w", err)
+			`SELECT COUNT(*), COALESCE(MIN(NULLIF(TRIM(error), '')), '') FROM tasks
+			 WHERE expression_id = ? AND status = 'error'`, exprID,
+		).Scan(&failed, &failedErr); err != nil {
+			return fmt.Errorf("read failed tasks: %w", err)
 		}
 		if failed > 0 {
-			return updateExprTx(tx, exprID, "error", 0, "one or more tasks failed")
+			// Показываем причину отказа, а не общее "one or more tasks failed".
+			if failedErr == "" {
+				failedErr = "one or more tasks failed"
+			}
+			return updateExprTx(tx, exprID, "error", 0, failedErr)
 		}
 
 		var incomplete int

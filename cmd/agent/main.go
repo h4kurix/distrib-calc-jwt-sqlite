@@ -183,15 +183,29 @@ func (a *agent) worker(ctx context.Context, id int) {
 		task, err := a.fetchTask(ctx)
 		if err != nil {
 			log.Printf("worker %d: fetch task: %v", id, err)
-		} else if task != nil {
-			a.process(ctx, id, task)
+			if !a.pause(ctx, a.cfg.TaskPollInterval) {
+				return
+			}
+			continue
 		}
+		if task == nil {
+			// Очередь пуста — ждём, но после реальной задачи сразу идём за новой.
+			if !a.pause(ctx, a.cfg.TaskPollInterval) {
+				return
+			}
+			continue
+		}
+		a.process(ctx, id, task)
+	}
+}
 
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Second):
-		}
+// pause ждёт d или завершения контекста. Возвращает false при остановке.
+func (a *agent) pause(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 
