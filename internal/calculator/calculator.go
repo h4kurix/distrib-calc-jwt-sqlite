@@ -74,6 +74,16 @@ func ProcessExpression(st *store.Store, ctx context.Context, exprStr, userID str
 	if err != nil {
 		return nil, err
 	}
+	hasOperation := false
+	for _, tok := range tokens {
+		if tok.type_ == operator {
+			hasOperation = true
+			break
+		}
+	}
+	if !hasOperation {
+		return nil, fmt.Errorf("expression has no operations")
+	}
 	tree, err := buildExpressionTree(tokens)
 	if err != nil {
 		return nil, err

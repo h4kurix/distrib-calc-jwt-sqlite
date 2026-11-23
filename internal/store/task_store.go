@@ -74,7 +74,8 @@ func (s *Store) ClaimNextTask(ctx context.Context) (*Task, bool, error) {
 				WHERE t.status = 'pending'
 				AND NOT EXISTS (
 					SELECT 1 FROM tasks d
-					WHERE d.status != 'completed' AND 'task:' || d.id IN (t.arg1, t.arg2)
+					WHERE d.status != 'completed'
+					AND (d.id = substr(t.arg1, 6) OR d.id = substr(t.arg2, 6))
 				)
 				ORDER BY t.rowid ASC LIMIT 1`,
 			)
