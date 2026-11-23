@@ -21,7 +21,7 @@ func makeToken(t *testing.T, claims jwt.MapClaims) string {
 }
 
 func TestAuthMiddleware(t *testing.T) {
-	deps := NewDeps(nil, testSecret, 24*time.Hour, 24*time.Hour)
+	deps := NewDeps(nil, Options{Secret: testSecret, AgentTokenTTL: 24 * time.Hour, UserTokenTTL: 24 * time.Hour})
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -52,7 +52,7 @@ func TestAuthMiddleware(t *testing.T) {
 }
 
 func TestAgentAuthMiddleware(t *testing.T) {
-	deps := NewDeps(nil, testSecret, 24*time.Hour, 24*time.Hour)
+	deps := NewDeps(nil, Options{Secret: testSecret, AgentTokenTTL: 24 * time.Hour, UserTokenTTL: 24 * time.Hour})
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})

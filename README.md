@@ -57,6 +57,8 @@ docker compose up --build --scale agent=3
 | `MAX_OPERATION_TIME_MS` | потолок времени операции | `30000` |
 | `AGENT_TOKEN_TTL` | срок жизни токена агента | `24h` |
 | `USER_TOKEN_TTL` | срок жизни пользовательского токена | `24h` |
+| `STALE_TASK_TIMEOUT` | когда задача считается зависшей и возвращается в очередь | `2m` |
+| `EXPRESSION_TIMEOUT` | когда выражение закрывается по таймауту | `10m` |
 | `TASK_POLL_INTERVAL` | интервал опроса задач агентом | `500ms` |
 | `STATIC_DIR` | каталог статики оркестратора | `./static` |
 | `TIME_ADDITION_MS`, `TIME_SUBTRACTION_MS`, `TIME_MULTIPLICATIONS_MS`, `TIME_DIVISIONS_MS` | искусственная пауза операции, `0` отключает | `0` |

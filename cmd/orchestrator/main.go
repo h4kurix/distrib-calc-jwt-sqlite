@@ -49,7 +49,13 @@ func main() {
 			logger.Error("close database: %v", err)
 		}
 	}()
-	deps := handler.NewDeps(store.New(db), cfg.JWTSecret, cfg.AgentTokenTTL, cfg.UserTokenTTL)
+	deps := handler.NewDeps(store.New(db), handler.Options{
+		Secret:           cfg.JWTSecret,
+		AgentTokenTTL:    cfg.AgentTokenTTL,
+		UserTokenTTL:     cfg.UserTokenTTL,
+		StaleTaskTimeout: cfg.StaleTaskTimeout,
+		ExpressionExpiry: cfg.ExpressionExpiry,
+	})
 
 	mux := http.NewServeMux()
 	// Ограничиваем только публичные роуты аутентификации: bcrypt на каждый

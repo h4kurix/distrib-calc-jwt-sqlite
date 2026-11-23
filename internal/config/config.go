@@ -20,6 +20,8 @@ type Config struct {
 	AgentBootstrapKey    string
 	AgentTokenTTL        time.Duration
 	UserTokenTTL         time.Duration
+	StaleTaskTimeout     time.Duration
+	ExpressionExpiry     time.Duration
 	TaskPollInterval     time.Duration
 	RequestTimeout       time.Duration
 	MaxExpressionLen     int
@@ -46,6 +48,8 @@ func Load() (*Config, error) {
 		AgentBootstrapKey:    os.Getenv("AGENT_BOOTSTRAP_KEY"),
 		AgentTokenTTL:        durationDefault("AGENT_TOKEN_TTL", 24*time.Hour),
 		UserTokenTTL:         durationDefault("USER_TOKEN_TTL", 24*time.Hour),
+		StaleTaskTimeout:     durationDefault("STALE_TASK_TIMEOUT", 2*time.Minute),
+		ExpressionExpiry:     durationDefault("EXPRESSION_TIMEOUT", 10*time.Minute),
 		TaskPollInterval:     durationDefault("TASK_POLL_INTERVAL", 500*time.Millisecond),
 		RequestTimeout:       durationDefault("REQUEST_TIMEOUT", 10*time.Second),
 		MaxExpressionLen:     intDefault("MAX_EXPRESSION_LEN", 256),

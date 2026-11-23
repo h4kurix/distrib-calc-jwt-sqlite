@@ -100,8 +100,6 @@ func createTables(conn *sql.DB) error {
 			created_at TIMESTAMP NOT NULL,
 			FOREIGN KEY (user_id) REFERENCES users(id)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
-		`CREATE INDEX IF NOT EXISTS idx_tasks_expression ON tasks(expression_id)`,
 	}
 	for _, stmt := range statements {
 		if _, err := conn.Exec(stmt); err != nil {
@@ -137,6 +135,8 @@ func createTables(conn *sql.DB) error {
 
 	// Индексы создаются после миграций: часть из них использует новые колонки.
 	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_expression ON tasks(expression_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_claimed_at ON tasks(claimed_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_expressions_user ON expressions(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_expressions_status ON expressions(status)`,

@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"calc-service/internal/calculator"
 	"calc-service/internal/logger"
@@ -23,11 +22,6 @@ type TaskFailureRequest struct {
 	ID    string `json:"id"`
 	Error string `json:"error"`
 }
-
-const (
-	staleTaskTimeout  = 2 * time.Minute
-	expressionTimeout = 10 * time.Minute
-)
 
 // TaskHandler обрабатывает выдачу задач и приём результатов.
 func (d *Deps) TaskHandler(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +176,7 @@ func (d *Deps) HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 // ProcessPendingTasks выполняет обслуживание очереди: возвращает зависшие
 // задачи и закрывает выражения, которые уже не могут завершиться.
 func (d *Deps) ProcessPendingTasks(ctx context.Context) {
-	n, err := d.Store.ReleaseStaleTasks(ctx, staleTaskTimeout)
+	n, err := d.Store.ReleaseStaleTasks(ctx, d.staleTaskTimeout)
 	if err != nil {
 		logger.Error("release stale tasks: %v", err)
 		return
@@ -191,7 +185,7 @@ func (d *Deps) ProcessPendingTasks(ctx context.Context) {
 		logger.Warn("released %d stale tasks", n)
 	}
 
-	expired, err := d.Store.ExpireStaleExpressions(ctx, expressionTimeout)
+	expired, err := d.Store.ExpireStaleExpressions(ctx, d.expressionExpiry)
 	if err != nil {
 		logger.Error("expire stale expressions: %v", err)
 		return
