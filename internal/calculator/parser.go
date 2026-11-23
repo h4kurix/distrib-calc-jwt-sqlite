@@ -156,10 +156,9 @@ func buildExpressionTree(tokens []token) (*Node, error) {
 			outputQueue = outputQueue[:len(outputQueue)-1]
 			// Унарный знак превращается в бинарный: 0 - x или 0 + x.
 			outputQueue = append(outputQueue, &Node{
-				Value:    op[1:],
-				Left:     &Node{Value: "0"},
-				Right:    operand,
-				Priority: precedence(op[1:]),
+				Value: op[1:],
+				Left:  &Node{Value: "0"},
+				Right: operand,
 			})
 			return nil
 		}
@@ -170,7 +169,7 @@ func buildExpressionTree(tokens []token) (*Node, error) {
 		left := outputQueue[len(outputQueue)-2]
 		outputQueue = outputQueue[:len(outputQueue)-2]
 		outputQueue = append(outputQueue, &Node{
-			Value: op, Left: left, Right: right, Priority: precedence(op),
+			Value: op, Left: left, Right: right,
 		})
 		return nil
 	}

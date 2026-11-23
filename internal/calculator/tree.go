@@ -1,26 +1,25 @@
 package calculator
 
 import (
+	"calc-service/internal/id"
 	"calc-service/internal/store"
 	"calc-service/pkg/logger"
 	"os"
 	"strconv"
-
-	"github.com/google/uuid"
 )
 
 // Node — узел дерева выражения.
 type Node struct {
-	Value    string
-	Left     *Node
-	Right    *Node
-	TaskID   string
-	Priority int
+	Value  string
+	Left   *Node
+	Right  *Node
+	TaskID string
 }
 
-func newID(prefix string) string { return prefix + "-" + uuid.New().String() }
+// operationTimeFallback используется, когда переменная окружения не задана.
+var operationTimeFallback = map[string]int{"+": 100, "-": 100, "*": 200, "/": 300}
 
-func generateTaskID() string { return newID("task") }
+func generateTaskID() string { return id.New("task") }
 
 func getNodeReference(n *Node) string {
 	if n == nil {
@@ -47,7 +46,7 @@ func getOperationTime(op string) int {
 		return 0
 	}
 
-	fallback := map[string]int{"+": 100, "-": 100, "*": 200, "/": 300}[op]
+	fallback := operationTimeFallback[op]
 	t, err := strconv.Atoi(envVar)
 	if err != nil {
 		return fallback

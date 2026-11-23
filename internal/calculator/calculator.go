@@ -1,11 +1,17 @@
 package calculator
 
 import (
+	"calc-service/internal/id"
 	"calc-service/internal/store"
 	"calc-service/pkg/logger"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// ErrInternal отделяет внутренние ошибки от ошибок валидации выражения.
+// Handler показывает клиенту только валидацию.
+var ErrInternal = errors.New("internal error")
 
 var (
 	maxExpressionLen = 256
@@ -44,8 +50,8 @@ func ProcessExpression(exprStr, userID string) (*store.Expression, error) {
 		return nil, err
 	}
 
-	id := newID("expr")
-	tasks, err := createTasksFromTree(id, tree)
+	exprID := id.New("expr")
+	tasks, err := createTasksFromTree(exprID, tree)
 	if err != nil {
 		return nil, err
 	}
@@ -53,10 +59,10 @@ func ProcessExpression(exprStr, userID string) (*store.Expression, error) {
 		return nil, fmt.Errorf("too many operations (limit %d)", maxTasksPerExpr)
 	}
 
-	expr, err := store.CreateExpressionWithTasks(id, exprStr, userID, tasks)
+	expr, err := store.CreateExpressionWithTasks(exprID, exprStr, userID, tasks)
 	if err != nil {
 		logger.Error("create expression: %v", err)
-		return nil, fmt.Errorf("create expression: %w", err)
+		return nil, fmt.Errorf("%w: create expression: %v", ErrInternal, err)
 	}
 	return expr, nil
 }

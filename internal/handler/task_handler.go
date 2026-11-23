@@ -47,9 +47,9 @@ func handleGetTask(w http.ResponseWriter) {
 		return
 	}
 	if !found {
-		// Пустая очередь — это не ошибка: агент просто повторит запрос.
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
+		// Пустая очередь — не ошибка: агент просто повторит запрос.
+		// Тело остаётся JSON, как у всех остальных ответов API.
+		writeError(w, http.StatusNotFound, "queue empty")
 		return
 	}
 	writeJSON(w, http.StatusOK, TaskResponse{Task: task})
@@ -99,8 +99,8 @@ func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	id, ok := pathID(r.URL.Path, "/api/v1/tasks/")
-	if !ok {
+	id := r.PathValue("id")
+	if id == "" {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
@@ -113,7 +113,7 @@ func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	if !task.Completed {
+	if task.Status != store.StatusCompleted {
 		writeError(w, http.StatusNotFound, "task not completed")
 		return
 	}
@@ -159,8 +159,8 @@ func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	id, ok := pathID(r.URL.Path, "/internal/task/result/")
-	if !ok {
+	id := r.PathValue("id")
+	if id == "" {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
@@ -169,7 +169,7 @@ func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 		logAndFail(w, "get task", err)
 		return
 	}
-	if !found || !task.Completed {
+	if !found || task.Status != store.StatusCompleted {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}

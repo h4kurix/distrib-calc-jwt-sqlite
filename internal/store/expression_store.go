@@ -20,7 +20,7 @@ type Expression struct {
 
 const exprColumns = `id, user_id, expression, status, COALESCE(result, 0), COALESCE(error, ''), created_at`
 
-func scanExpression(rows interface{ Scan(...interface{}) error }) (*Expression, error) {
+func scanExpression(rows rowScanner) (*Expression, error) {
 	var e Expression
 	err := rows.Scan(&e.ID, &e.UserID, &e.Expression, &e.Status, &e.Result, &e.Error, &e.CreatedAt)
 	if err != nil {

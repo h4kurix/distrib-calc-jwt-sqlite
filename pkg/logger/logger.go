@@ -43,10 +43,10 @@ func Init(env, level string) error {
 	return nil
 }
 
-func Debug(format string, args ...interface{}) { sugar.Debugf(format, args...) }
-func Info(format string, args ...interface{})  { sugar.Infof(format, args...) }
-func Warn(format string, args ...interface{})  { sugar.Warnf(format, args...) }
-func Error(format string, args ...interface{}) { sugar.Errorf(format, args...) }
+func Debug(format string, args ...any) { sugar.Debugf(format, args...) }
+func Info(format string, args ...any)  { sugar.Infof(format, args...) }
+func Warn(format string, args ...any)  { sugar.Warnf(format, args...) }
+func Error(format string, args ...any) { sugar.Errorf(format, args...) }
 
 func Sync() {
 	_ = sugar.Sync()

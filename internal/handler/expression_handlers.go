@@ -1,8 +1,8 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
-	"strings"
 
 	"calc-service/internal/calculator"
 	"calc-service/internal/store"
@@ -52,6 +52,10 @@ func HandleCalculate(w http.ResponseWriter, r *http.Request) {
 
 	expr, err := calculator.ProcessExpression(req.Expression, userID)
 	if err != nil {
+		if errors.Is(err, calculator.ErrInternal) {
+			logAndFail(w, "process expression", err)
+			return
+		}
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
@@ -93,8 +97,8 @@ func HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	id, ok := pathID(r.URL.Path, "/api/v1/expressions/")
-	if !ok {
+	id := r.PathValue("id")
+	if id == "" {
 		writeError(w, http.StatusNotFound, "expression not found")
 		return
 	}
@@ -112,16 +116,4 @@ func HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ExpressionDetailResponse{Expression: ExpressionResponse{
 		ID: expr.ID, Status: expr.Status, Result: expr.Result, Error: expr.Error,
 	}})
-}
-
-// pathID достаёт идентификатор из пути и отвергает пустой хвост и лишние сегменты.
-func pathID(path, prefix string) (string, bool) {
-	rest := strings.TrimPrefix(path, prefix)
-	if rest == path || rest == "" {
-		return "", false
-	}
-	if strings.ContainsRune(rest, '/') {
-		return "", false
-	}
-	return rest, true
 }

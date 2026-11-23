@@ -28,8 +28,14 @@ func WriteError(w http.ResponseWriter, status int, message string) {
 	writeError(w, status, message)
 }
 
-// decodeJSONBody читает JSON с ограничением размера и запретом лишних полей.
-func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) error {
+// WriteJSON — экспорт успешных ответов для маршрутов вне handler.
+func WriteJSON(w http.ResponseWriter, status int, v any) {
+	writeJSON(w, status, v)
+}
+
+// decodeJSONBody читает один JSON-объект с ограничением размера.
+// Неизвестные поля допускаются: это часть текущего контракта API.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(dst); err != nil {

@@ -26,7 +26,7 @@ type Task struct {
 const taskColumns = `id, expression_id, user_id, arg1, arg2, operator, operation_time,
 	COALESCE(result, 0), completed, status, attempts, COALESCE(error, '')`
 
-func scanTask(row interface{ Scan(...interface{}) error }) (*Task, error) {
+func scanTask(row rowScanner) (*Task, error) {
 	var t Task
 	err := row.Scan(
 		&t.ID, &t.ExpressionID, &t.UserID, &t.Arg1, &t.Arg2, &t.Operator,
@@ -186,64 +186,4 @@ func FailTask(taskID, errText string) error {
 		return fmt.Errorf("task %s is not claimed", taskID)
 	}
 	return nil
-}
-
-// GetUsersWithPendingExpressions возвращает пользователей с незавершёнными выражениями.
-func GetUsersWithPendingExpressions() ([]string, error) {
-	rows, err := database.GetDB().Query(
-		`SELECT DISTINCT user_id FROM expressions WHERE status IN ('pending', 'in_progress')`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("get pending users: %w", err)
-	}
-	defer rows.Close()
-
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan user: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate users: %w", err)
-	}
-	return ids, nil
-}
-
-// CountPendingTasks считает незавершённые задачи.
-func CountPendingTasks() (int, error) {
-	var count int
-	err := database.GetDB().QueryRow(
-		`SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'claimed')`,
-	).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count pending tasks: %w", err)
-	}
-	return count, nil
-}
-
-// CountIncompleteTasks считает задачи, которые ещё не завершены успешно.
-func CountIncompleteTasks(exprID string) (int, error) {
-	var count int
-	err := database.GetDB().QueryRow(
-		`SELECT COUNT(*) FROM tasks WHERE expression_id = ? AND status != 'completed'`, exprID,
-	).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count incomplete tasks: %w", err)
-	}
-	return count, nil
-}
-
-// CountFailedTasks считает ошибочные задачи выражения.
-func CountFailedTasks(exprID string) (int, error) {
-	var count int
-	err := database.GetDB().QueryRow(
-		`SELECT COUNT(*) FROM tasks WHERE expression_id = ? AND status = 'error'`, exprID,
-	).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count failed tasks: %w", err)
-	}
-	return count, nil
 }

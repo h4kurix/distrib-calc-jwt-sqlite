@@ -2,13 +2,14 @@ package database
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 var db *sql.DB
@@ -110,21 +111,42 @@ func createTables(conn *sql.DB) error {
 		}
 	}
 
-	// Миграции для уже существующих баз.
+	// Миграции для уже существующих баз. Наличие колонки проверяется
+	// через PRAGMA, а не по тексту ошибки ALTER TABLE.
 	migrations := []struct {
+		table  string
+		column string
 		stmt   string
-		ignore string
 	}{
-		{`ALTER TABLE expressions ADD COLUMN error TEXT`, "duplicate column name"},
-		{`ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'`, "duplicate column name"},
-		{`ALTER TABLE tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`, "duplicate column name"},
-		{`ALTER TABLE tasks ADD COLUMN error TEXT`, "duplicate column name"},
-		{`ALTER TABLE tasks ADD COLUMN claimed_at TIMESTAMP`, "duplicate column name"},
+		{"expressions", "error", `ALTER TABLE expressions ADD COLUMN error TEXT`},
+		{"tasks", "status", `ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'`},
+		{"tasks", "attempts", `ALTER TABLE tasks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`},
+		{"tasks", "error", `ALTER TABLE tasks ADD COLUMN error TEXT`},
+		{"tasks", "claimed_at", `ALTER TABLE tasks ADD COLUMN claimed_at TIMESTAMP`},
 	}
 	for _, m := range migrations {
-		_, err := conn.Exec(m.stmt)
-		if err != nil && !strings.Contains(strings.ToLower(err.Error()), m.ignore) {
+		exists, err := columnExists(conn, m.table, m.column)
+		if err != nil {
 			return err
+		}
+		if exists {
+			continue
+		}
+		if _, err := conn.Exec(m.stmt); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", m.table, m.column, err)
+		}
+	}
+
+	// Индексы создаются после миграций: часть из них использует новые колонки.
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_tasks_claimed_at ON tasks(claimed_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_expressions_user ON expressions(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_expressions_status ON expressions(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
+	}
+	for _, stmt := range indexes {
+		if _, err := conn.Exec(stmt); err != nil {
+			return fmt.Errorf("create index: %w", err)
 		}
 	}
 
@@ -133,6 +155,30 @@ func createTables(conn *sql.DB) error {
 		return err
 	}
 	return nil
+}
+
+func columnExists(conn *sql.DB, table, column string) (bool, error) {
+	rows, err := conn.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, fmt.Errorf("pragma table_info %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan table_info %s: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate table_info %s: %w", table, err)
+	}
+	return false, nil
 }
 
 // Transaction выполняет fn в транзакции с откатом при ошибке или панике.
@@ -170,6 +216,10 @@ func isBusy(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	code := sqliteErr.Code()
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }

@@ -11,7 +11,7 @@ import (
 func AggregateResults(tasks []*store.Task) (float64, error) {
 	results := make(map[string]float64, len(tasks))
 	for _, t := range tasks {
-		if t.Status != "completed" && !t.Completed {
+		if t.Status != store.StatusCompleted {
 			return 0, fmt.Errorf("task %s is not completed", t.ID)
 		}
 		results[t.ID] = t.Result

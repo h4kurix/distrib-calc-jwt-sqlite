@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -31,6 +30,7 @@ func main() {
 
 	handler.SetJWTSecret(cfg.JWTSecret)
 	handler.SetAgentTokenTTL(cfg.AgentTokenTTL)
+	handler.SetUserTokenTTL(cfg.UserTokenTTL)
 	calculator.Configure(cfg.MaxExpressionLen, cfg.MaxTasksPerExpr, cfg.MaxOperationTimeMS)
 
 	if err := database.InitDB(cfg.DBPath); err != nil {
@@ -44,31 +44,29 @@ func main() {
 	}()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/register", handler.HandleRegister)
-	mux.HandleFunc("/api/v1/login", handler.HandleLogin)
+	// Ограничиваем только публичные роуты аутентификации: bcrypt на каждый
+	// запрос делает перебор паролей дорогим для сервера.
+	authLimiter := handler.NewRateLimiter(20, time.Minute)
+	mux.HandleFunc("/api/v1/register", authLimiter(handler.HandleRegister))
+	mux.HandleFunc("/api/v1/login", authLimiter(handler.HandleLogin))
 
-	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/api/v1/calculate" && r.Method == http.MethodPost:
-			handler.HandleCalculate(w, r)
-		case r.URL.Path == "/api/v1/expressions" && r.Method == http.MethodGet:
-			handler.HandleExpressions(w, r)
-		case hasPrefix(r.URL.Path, "/api/v1/expressions/"):
-			handler.HandleExpressionByID(w, r)
-		case hasPrefix(r.URL.Path, "/api/v1/tasks/"):
-			handler.HandleTaskByID(w, r)
-		default:
-			handler.HandleNotFound(w)
-		}
-	})
-	mux.Handle("/api/v1/calculate", handler.AuthMiddleware(apiHandler))
-	mux.Handle("/api/v1/expressions", handler.AuthMiddleware(apiHandler))
-	mux.Handle("/api/v1/expressions/", handler.AuthMiddleware(apiHandler))
-	mux.Handle("/api/v1/tasks/", handler.AuthMiddleware(apiHandler))
+	// Маршрут описан один раз. Параметр {id} доступен обработчику через
+	// r.PathValue. Проверку метода делает сам обработчик, чтобы ответ 405
+	// оставался JSON.
+	user := func(h http.HandlerFunc) http.Handler {
+		return handler.AuthMiddleware(h)
+	}
+	mux.Handle("/api/v1/calculate", user(handler.HandleCalculate))
+	mux.Handle("/api/v1/expressions", user(handler.HandleExpressions))
+	mux.Handle("/api/v1/expressions/{id}", user(handler.HandleExpressionByID))
+	mux.Handle("/api/v1/tasks/{id}", user(handler.HandleTaskByID))
 
-	mux.Handle("/internal/task", handler.AgentAuthMiddleware(http.HandlerFunc(handler.TaskHandler)))
-	mux.Handle("/internal/task/result/", handler.AgentAuthMiddleware(http.HandlerFunc(handler.HandleInternalTaskByID)))
-	mux.Handle("/internal/task/fail", handler.AgentAuthMiddleware(http.HandlerFunc(handler.HandleTaskFailure)))
+	agent := func(h http.HandlerFunc) http.Handler {
+		return handler.AgentAuthMiddleware(h)
+	}
+	mux.Handle("/internal/task", agent(handler.TaskHandler))
+	mux.Handle("/internal/task/result/{id}", agent(handler.HandleInternalTaskByID))
+	mux.Handle("/internal/task/fail", agent(handler.HandleTaskFailure))
 	mux.HandleFunc("/internal/agent/token", func(w http.ResponseWriter, r *http.Request) {
 		handleAgentToken(w, r, cfg)
 	})
@@ -124,16 +122,7 @@ func main() {
 	}
 }
 
-func hasPrefix(path, prefix string) bool {
-	return len(path) > len(prefix) && path[:len(prefix)] == prefix
-}
-
 func startMaintenance(ctx context.Context, interval time.Duration) {
-	defer func() {
-		if p := recover(); p != nil {
-			logger.Error("maintenance panic: %v", p)
-		}
-	}()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -141,7 +130,15 @@ func startMaintenance(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			handler.ProcessPendingTasks()
+			// Паника в одном проходе не должна навсегда остановить обслуживание.
+			func() {
+				defer func() {
+					if p := recover(); p != nil {
+						logger.Error("maintenance panic: %v", p)
+					}
+				}()
+				handler.ProcessPendingTasks()
+			}()
 		}
 	}
 }
@@ -166,8 +163,7 @@ func handleAgentToken(w http.ResponseWriter, r *http.Request, cfg *config.Config
 }
 
 func writeToken(w http.ResponseWriter, token string) {
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := fmt.Fprintf(w, "{\"token\":%q}\n", token); err != nil {
-		logger.Error("write token: %v", err)
-	}
+	handler.WriteJSON(w, http.StatusOK, struct {
+		Token string `json:"token"`
+	}{Token: token})
 }

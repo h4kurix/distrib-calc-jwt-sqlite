@@ -1,10 +1,9 @@
 package store
 
 import (
+	"calc-service/internal/id"
 	"calc-service/pkg/database"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -45,7 +44,7 @@ func CreateUser(username, password string) (*User, error) {
 	}
 
 	user := &User{
-		ID:        fmt.Sprintf("user-%d", time.Now().UnixNano()),
+		ID:        id.New("user"),
 		Username:  username,
 		Password:  string(hash),
 		CreatedAt: time.Now(),
@@ -84,88 +83,4 @@ func GetUserByUsername(username string) (*User, bool, error) {
 		return nil, false, fmt.Errorf("get user: %w", err)
 	}
 	return &u, true, nil
-}
-
-func ValidateUser(username, password string) (*User, bool, error) {
-	u, found, err := GetUserByUsername(username)
-	if err != nil || !found {
-		return nil, false, err
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password)); err != nil {
-		return nil, false, nil
-	}
-	return u, true, nil
-}
-
-// Session представляет сессию пользователя.
-type Session struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-func NewSession(userID string) (*Session, error) {
-	now := time.Now()
-	s := &Session{
-		ID:        fmt.Sprintf("session-%d", now.UnixNano()),
-		UserID:    userID,
-		CreatedAt: now,
-		ExpiresAt: now.Add(24 * time.Hour),
-	}
-	hash := sha256.Sum256([]byte(s.ID))
-	_, err := database.GetDB().Exec(
-		`INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
-		s.ID, s.UserID, hex.EncodeToString(hash[:]), s.CreatedAt, s.ExpiresAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert session: %w", err)
-	}
-	return s, nil
-}
-
-func GetSessionByID(id string) (*Session, bool, error) {
-	var s Session
-	err := database.GetDB().QueryRow(
-		`SELECT id, user_id, created_at, expires_at FROM sessions WHERE id = ?`, id,
-	).Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.ExpiresAt)
-	if err == sql.ErrNoRows {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("get session: %w", err)
-	}
-	return &s, true, nil
-}
-
-func DeleteSession(id string) error {
-	_, err := database.GetDB().Exec(`DELETE FROM sessions WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("delete session: %w", err)
-	}
-	return nil
-}
-
-func ListSessions(userID string) ([]*Session, error) {
-	rows, err := database.GetDB().Query(
-		`SELECT id, user_id, created_at, expires_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC`,
-		userID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list sessions: %w", err)
-	}
-	defer rows.Close()
-
-	var sessions []*Session
-	for rows.Next() {
-		var s Session
-		if err := rows.Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.ExpiresAt); err != nil {
-			return nil, fmt.Errorf("scan session: %w", err)
-		}
-		sessions = append(sessions, &s)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate sessions: %w", err)
-	}
-	return sessions, nil
 }

@@ -37,10 +37,16 @@ type AuthResponse struct {
 	Token string `json:"token"`
 }
 
-var agentTokenTTL = 24 * time.Hour
+var (
+	agentTokenTTL = 24 * time.Hour
+	userTokenTTL  = 24 * time.Hour
+)
 
 // SetAgentTokenTTL задаёт срок жизни токена агента.
 func SetAgentTokenTTL(ttl time.Duration) { agentTokenTTL = ttl }
+
+// SetUserTokenTTL задаёт срок жизни пользовательского токена.
+func SetUserTokenTTL(ttl time.Duration) { userTokenTTL = ttl }
 
 func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -135,7 +141,7 @@ func generateToken(userID string) (string, error) {
 	claims := jwt.MapClaims{
 		"sub": userID,
 		"iat": now.Unix(),
-		"exp": now.Add(24 * time.Hour).Unix(),
+		"exp": now.Add(userTokenTTL).Unix(),
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret)
 }
@@ -155,7 +161,7 @@ func GenerateAgentToken() (string, error) {
 }
 
 // writeJSON кодирует ответ в буфер и ставит статус только после успешного кодирования.
-func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(v); err != nil {
 		logger.Error("encode response: %v", err)

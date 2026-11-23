@@ -338,6 +338,7 @@ func (a *agent) reportFailure(ctx context.Context, taskID, errText string) {
 		Error string `json:"error"`
 	}{taskID, errText})
 	if err != nil {
+		log.Printf("marshal failure report for %s: %v", taskID, err)
 		return
 	}
 	err = a.withRetry(ctx, func() error {
