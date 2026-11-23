@@ -12,6 +12,8 @@
 ```bash
 git clone https://github.com/h4kurix/distrib-calc-jwt-sqlite
 cd distrib-calc-jwt-sqlite
+cp .env.example .env
+# задайте свой JWT_SECRET в .env — файл не попадает в git
 docker-compose up --build
 ```
 Система будет доступна на `http://localhost:8080`
