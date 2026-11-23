@@ -52,16 +52,18 @@ docker compose up --build --scale agent=3
 | `ENV`, `LOG_LEVEL` | окружение и уровень логов | `dev`, `info` |
 | `PORT`, `ORCHESTRATOR_PORT` | порты оркестратора и адрес агента | `8080` |
 | `DB_PATH` | путь к SQLite | `data/calculator.db` |
-| `COMPUTING_POWER` | воркеров в контейнере агента | `3` |
+| `COMPUTING_POWER` | воркеров в контейнере агента | `16` |
 | `MAX_EXPRESSION_LEN`, `MAX_TASKS_PER_EXPR` | лимиты сложности выражения | `256` |
 | `MAX_OPERATION_TIME_MS` | потолок времени операции | `30000` |
 | `AGENT_TOKEN_TTL` | срок жизни токена агента | `24h` |
 | `USER_TOKEN_TTL` | срок жизни пользовательского токена | `24h` |
 | `TASK_POLL_INTERVAL` | интервал опроса задач агентом | `500ms` |
 | `STATIC_DIR` | каталог статики оркестратора | `./static` |
-| `TIME_ADDITION_MS`, `TIME_SUBTRACTION_MS`, `TIME_MULTIPLICATIONS_MS`, `TIME_DIVISIONS_MS` | время операции по типу | `100`, `100`, `200`, `300` |
+| `TIME_ADDITION_MS`, `TIME_SUBTRACTION_MS`, `TIME_MULTIPLICATIONS_MS`, `TIME_DIVISIONS_MS` | искусственная пауза операции, `0` отключает | `0` |
 
 Публичные роуты `register` и `login` ограничены: 20 запросов с адреса в минуту. При превышении сервер отвечает `429` с JSON.
+
+Паузы операций по умолчанию отключены. Число агентов можно увеличить без правки конфигурации: `docker compose up --scale agent=8`. Каждый агент при этом использует `COMPUTING_POWER` воркеров.
 
 ## API
 

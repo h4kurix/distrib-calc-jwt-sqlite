@@ -29,6 +29,7 @@ services:
     environment:
       - ORCHESTRATOR_HOST=orchestrator
       - ORCHESTRATOR_PORT=8080
+      - COMPUTING_POWER=${COMPUTING_POWER:-16}
     depends_on:
       orchestrator:
         condition: service_healthy
