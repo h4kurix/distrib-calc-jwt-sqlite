@@ -1,12 +1,11 @@
 package handler
 
 import (
-	"calc-service/internal/calculator"
-	"calc-service/internal/store"
-	"calc-service/pkg/logger"
-	"encoding/json"
 	"net/http"
 	"strings"
+
+	"calc-service/internal/calculator"
+	"calc-service/internal/store"
 )
 
 type CalculateRequest struct {
@@ -21,10 +20,12 @@ type ExpressionsResponse struct {
 	Expressions []ExpressionResponse `json:"expressions"`
 }
 
+// ExpressionResponse — публичное представление выражения.
+// Result без omitempty: ноль — законный результат, и клиент должен его видеть.
 type ExpressionResponse struct {
 	ID     string  `json:"id"`
 	Status string  `json:"status"`
-	Result float64 `json:"result,omitempty"`
+	Result float64 `json:"result"`
 	Error  string  `json:"error,omitempty"`
 }
 
@@ -34,25 +35,24 @@ type ExpressionDetailResponse struct {
 
 func HandleCalculate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
 	userID := getUserIDFromContext(r.Context())
 	if userID == "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	var req CalculateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	expr, err := calculator.ProcessExpression(req.Expression, userID)
 	if err != nil {
-		logger.Error("process expression: %v", err)
-		http.Error(w, "Invalid expression", http.StatusUnprocessableEntity)
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, CalculateResponse{ID: expr.ID})
@@ -60,14 +60,17 @@ func HandleCalculate(w http.ResponseWriter, r *http.Request) {
 
 func HandleExpressions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
 	userID := getUserIDFromContext(r.Context())
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	expressions, err := store.ListExpressions(userID)
 	if err != nil {
-		logger.Error("list expressions: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "list expressions", err)
 		return
 	}
 
@@ -82,24 +85,43 @@ func HandleExpressions(w http.ResponseWriter, r *http.Request) {
 
 func HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
 	userID := getUserIDFromContext(r.Context())
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/expressions/")
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, ok := pathID(r.URL.Path, "/api/v1/expressions/")
+	if !ok {
+		writeError(w, http.StatusNotFound, "expression not found")
+		return
+	}
 
 	expr, found, err := store.GetExpression(id)
 	if err != nil {
-		logger.Error("get expression: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "get expression", err)
 		return
 	}
 	if !found || expr.UserID != userID {
-		http.Error(w, "Expression not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "expression not found")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, ExpressionDetailResponse{Expression: ExpressionResponse{
 		ID: expr.ID, Status: expr.Status, Result: expr.Result, Error: expr.Error,
 	}})
+}
+
+// pathID достаёт идентификатор из пути и отвергает пустой хвост и лишние сегменты.
+func pathID(path, prefix string) (string, bool) {
+	rest := strings.TrimPrefix(path, prefix)
+	if rest == path || rest == "" {
+		return "", false
+	}
+	if strings.ContainsRune(rest, '/') {
+		return "", false
+	}
+	return rest, true
 }

@@ -1,13 +1,12 @@
 package handler
 
 import (
+	"net/http"
+	"time"
+
 	"calc-service/internal/calculator"
 	"calc-service/internal/store"
 	"calc-service/pkg/logger"
-	"encoding/json"
-	"net/http"
-	"strings"
-	"time"
 )
 
 type TaskResponse struct {
@@ -19,7 +18,15 @@ type TaskResultRequest struct {
 	Result float64 `json:"result"`
 }
 
-const staleTaskTimeout = 2 * time.Minute
+type TaskFailureRequest struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+const (
+	staleTaskTimeout  = 2 * time.Minute
+	expressionTimeout = 10 * time.Minute
+)
 
 // TaskHandler обрабатывает выдачу задач и приём результатов.
 func TaskHandler(w http.ResponseWriter, r *http.Request) {
@@ -29,18 +36,19 @@ func TaskHandler(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		handlePostTaskResult(w, r)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
 }
 
 func handleGetTask(w http.ResponseWriter) {
 	task, found, err := store.ClaimNextTask()
 	if err != nil {
-		logger.Error("claim task: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "claim task", err)
 		return
 	}
 	if !found {
+		// Пустая очередь — это не ошибка: агент просто повторит запрос.
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -49,34 +57,27 @@ func handleGetTask(w http.ResponseWriter) {
 
 func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 	var req TaskResultRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-	if req.ID == "" {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	if err := decodeJSONBody(w, r, &req); err != nil || req.ID == "" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	task, found, err := store.GetTask(req.ID)
 	if err != nil {
-		logger.Error("get task: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "get task", err)
 		return
 	}
 	if !found {
-		http.Error(w, "Task not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
 	if err := store.CompleteTask(req.ID, req.Result); err != nil {
-		logger.Error("complete task: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "complete task", err)
 		return
 	}
 
 	if err := finalizeExpression(task.ExpressionID, task.UserID); err != nil {
-		logger.Error("finalize expression %s: %v", task.ExpressionID, err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "finalize expression "+task.ExpressionID, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -90,27 +91,30 @@ func finalizeExpression(exprID, userID string) error {
 // HandleTaskByID возвращает результат задачи владельцу.
 func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
 	userID := getUserIDFromContext(r.Context())
 	if userID == "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	id, ok := pathID(r.URL.Path, "/api/v1/tasks/")
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
 	task, found, err := store.GetTask(id)
 	if err != nil {
-		logger.Error("get task: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "get task", err)
 		return
 	}
 	if !found || task.UserID != userID {
-		http.Error(w, "Task not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
 	if !task.Completed {
-		http.Error(w, "Task not completed", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "task not completed")
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
@@ -121,55 +125,52 @@ func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 // HandleTaskFailure принимает сообщение об ошибке вычисления задачи.
 func HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
-	var req struct {
-		ID    string `json:"id"`
-		Error string `json:"error"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+	var req TaskFailureRequest
+	if err := decodeJSONBody(w, r, &req); err != nil || req.ID == "" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	task, found, err := store.GetTask(req.ID)
 	if err != nil {
-		logger.Error("get task: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "get task", err)
 		return
 	}
 	if !found {
-		http.Error(w, "Task not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
 	if err := store.FailTask(req.ID, req.Error); err != nil {
-		logger.Error("fail task %s: %v", req.ID, err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "fail task "+req.ID, err)
 		return
 	}
 	if err := finalizeExpression(task.ExpressionID, task.UserID); err != nil {
-		logger.Error("finalize expression %s after failure: %v", task.ExpressionID, err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "finalize expression "+task.ExpressionID, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 }
 
-// HandleInternalTaskByID.return result for internal clients.
+// HandleInternalTaskByID отдаёт результат задачи агенту по внутреннему API.
 func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/internal/task/result/")
+	id, ok := pathID(r.URL.Path, "/internal/task/result/")
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
 	task, found, err := store.GetTask(id)
 	if err != nil {
-		logger.Error("get task: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		logAndFail(w, "get task", err)
 		return
 	}
 	if !found || !task.Completed {
-		http.Error(w, "Not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
@@ -177,8 +178,8 @@ func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 	}{Result: task.Result})
 }
 
-// ProcessPendingTasks выполняет только обслуживание очереди. Финализация
-// выражений делается в handlePostTaskResult в одной транзакции.
+// ProcessPendingTasks выполняет обслуживание очереди: возвращает зависшие
+// задачи и закрывает выражения, которые уже не могут завершиться.
 func ProcessPendingTasks() {
 	n, err := store.ReleaseStaleTasks(staleTaskTimeout)
 	if err != nil {
@@ -187,5 +188,14 @@ func ProcessPendingTasks() {
 	}
 	if n > 0 {
 		logger.Warn("released %d stale tasks", n)
+	}
+
+	expired, err := store.ExpireStaleExpressions(expressionTimeout)
+	if err != nil {
+		logger.Error("expire stale expressions: %v", err)
+		return
+	}
+	if expired > 0 {
+		logger.Warn("expired %d stale expressions", expired)
 	}
 }

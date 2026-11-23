@@ -38,25 +38,6 @@ func scanTask(row interface{ Scan(...interface{}) error }) (*Task, error) {
 	return &t, nil
 }
 
-// RegisterTasks связывает задачи с выражением и пользователем.
-func RegisterTasks(exprID, userID string, tasks []*Task) error {
-	return database.Transaction(func(tx *sql.Tx) error {
-		for _, task := range tasks {
-			_, err := tx.Exec(
-				`INSERT INTO tasks (
-					id, expression_id, user_id, arg1, arg2, operator, operation_time, completed, status
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-				task.ID, exprID, userID, task.Arg1, task.Arg2, task.Operator, task.OperationTime,
-				task.Completed,
-			)
-			if err != nil {
-				return fmt.Errorf("insert task %s: %w", task.ID, err)
-			}
-		}
-		return nil
-	})
-}
-
 // GetTasksByExpression возвращает задачи в порядке создания.
 func GetTasksByExpression(exprID, userID string) ([]*Task, error) {
 	rows, err := database.GetDB().Query(
@@ -81,31 +62,6 @@ func GetTasksByExpression(exprID, userID string) ([]*Task, error) {
 		return nil, fmt.Errorf("iterate tasks: %w", err)
 	}
 	return tasks, nil
-}
-
-// GetExecutableTasks возвращает задачи, у которых разрешены все зависимости.
-func GetExecutableTasks(exprID, userID string) ([]*Task, error) {
-	tasks, err := GetTasksByExpression(exprID, userID)
-	if err != nil {
-		return nil, err
-	}
-	completed := make(map[string]bool, len(tasks))
-	for _, t := range tasks {
-		if t.Status == "completed" {
-			completed[t.ID] = true
-		}
-	}
-
-	var ready []*Task
-	for _, t := range tasks {
-		if t.Status != "pending" {
-			continue
-		}
-		if dependencyReady(t.Arg1, completed) && dependencyReady(t.Arg2, completed) {
-			ready = append(ready, t)
-		}
-	}
-	return ready, nil
 }
 
 // ClaimNextTask атомарно захватывает одну готовую задачу.
@@ -230,12 +186,6 @@ func FailTask(taskID, errText string) error {
 		return fmt.Errorf("task %s is not claimed", taskID)
 	}
 	return nil
-}
-
-func isTaskReference(arg string) bool { return len(arg) > 5 && arg[:5] == "task:" }
-
-func dependencyReady(arg string, completed map[string]bool) bool {
-	return !isTaskReference(arg) || completed[arg[5:]]
 }
 
 // GetUsersWithPendingExpressions возвращает пользователей с незавершёнными выражениями.

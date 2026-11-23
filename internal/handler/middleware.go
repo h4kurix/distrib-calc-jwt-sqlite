@@ -43,21 +43,21 @@ func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, err := parseToken(r)
 		if err != nil || !token.Valid {
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
-			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
 			return
 		}
 		userID, ok := claims["sub"].(string)
 		if !ok || userID == "" {
-			http.Error(w, "Invalid token subject", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "invalid token subject")
 			return
 		}
 		if role, _ := claims["role"].(string); role == "agent" {
-			http.Error(w, "Agent token is not allowed here", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "agent token is not allowed here")
 			return
 		}
 		ctx := context.WithValue(r.Context(), userIDKey, userID)
@@ -75,16 +75,16 @@ func AgentAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, err := parseToken(r)
 		if err != nil || !token.Valid {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		if role, _ := claims["role"].(string); role != "agent" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)

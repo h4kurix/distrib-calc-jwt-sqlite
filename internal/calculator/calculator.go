@@ -5,7 +5,6 @@ import (
 	"calc-service/pkg/logger"
 	"fmt"
 	"strings"
-	"time"
 )
 
 var (
@@ -45,7 +44,7 @@ func ProcessExpression(exprStr, userID string) (*store.Expression, error) {
 		return nil, err
 	}
 
-	id := fmt.Sprintf("expr-%d", time.Now().UnixNano())
+	id := newID("expr")
 	tasks, err := createTasksFromTree(id, tree)
 	if err != nil {
 		return nil, err

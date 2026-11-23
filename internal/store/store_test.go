@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func setupDB(t *testing.T) {
@@ -130,5 +131,46 @@ func TestExpressionOwnershipAndErrors(t *testing.T) {
 	}
 	if _, found, _ := store.GetExpression("missing"); found {
 		t.Fatal("missing expression reported as found")
+	}
+}
+
+// Зависшее выражение должно закрываться по таймауту, а не висеть вечно.
+func TestExpireStaleExpressions(t *testing.T) {
+	setupDB(t)
+	user, err := store.CreateUser("owner", "password123")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := store.CreateExpressionWithTasks("expr-stale", "1+1", user.ID, nil); err != nil {
+		t.Fatalf("create expression: %v", err)
+	}
+	if _, err := store.CreateExpressionWithTasks("expr-done", "2+2", user.ID, nil); err != nil {
+		t.Fatalf("create done expression: %v", err)
+	}
+	if err := store.UpdateExpressionStatus("expr-done", "completed", 4, ""); err != nil {
+		t.Fatalf("complete expression: %v", err)
+	}
+
+	n, err := store.ExpireStaleExpressions(-time.Minute)
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expired %d, want 1", n)
+	}
+
+	stale, found, err := store.GetExpression("expr-stale")
+	if err != nil || !found {
+		t.Fatalf("get stale: found=%v err=%v", found, err)
+	}
+	if stale.Status != "error" || stale.Error == "" {
+		t.Fatalf("stale = %+v, want error with message", stale)
+	}
+	done, _, err := store.GetExpression("expr-done")
+	if err != nil {
+		t.Fatalf("get done: %v", err)
+	}
+	if done.Status != "completed" || done.Result != 4 {
+		t.Fatalf("completed expression changed: %+v", done)
 	}
 }

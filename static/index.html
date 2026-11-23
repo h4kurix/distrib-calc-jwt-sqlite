@@ -1,15 +1,16 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Calculator Client</title>
+    <title>Калькулятор</title>
     <style>
         body {
             font-family: sans-serif;
-            max-width: 400px;
+            max-width: 480px;
             margin: 2em auto;
+            padding: 0 1em;
         }
 
         input,
@@ -17,6 +18,11 @@
             padding: .5em;
             margin: .2em 0;
             width: 100%;
+            box-sizing: border-box;
+        }
+
+        button {
+            cursor: pointer;
         }
 
         .hidden {
@@ -26,131 +32,222 @@
         #result {
             margin-top: 1em;
             font-weight: bold;
+            min-height: 1.4em;
         }
 
         #auth-msg {
             color: red;
             font-weight: bold;
         }
+
+        .hint {
+            color: #666;
+            font-size: .85em;
+        }
     </style>
 </head>
 
 <body>
-    <h2>Auth</h2>
+    <h2>Вход</h2>
     <div id="auth">
-        <input id="username" placeholder="Username" />
-        <input id="password" type="password" placeholder="Password" />
-        <button id="btn-register">Register</button>
-        <button id="btn-login">Login</button>
+        <input id="username" placeholder="Логин" autocomplete="username" />
+        <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" />
+        <button id="btn-register">Регистрация</button>
+        <button id="btn-login">Войти</button>
+        <div class="hint">Логин 3–64 символа, пароль от 8 символов.</div>
         <div id="auth-msg"></div>
     </div>
 
     <div id="calc" class="hidden">
-        <h2>Calc</h2>
-        <input id="expr" placeholder="e.g. 2+2*2" />
-        <button id="btn-calc">Calculate</button>
-        <button id="btn-logout">Logout</button>
+        <h2>Вычисление</h2>
+        <input id="expr" placeholder="например, 2+2*2" />
+        <button id="btn-calc">Вычислить</button>
+        <button id="btn-logout">Выйти</button>
         <div id="result"></div>
     </div>
 
     <script>
-        const api = 'http://localhost:8080/api/v1';
+        // Относительный путь: страница работает и за прокси, и с другого хоста.
+        const api = '/api/v1';
+        const pollIntervalMs = 500;
+        const pollTimeoutMs = 60000; // после минуты ожидания показываем ошибку
+
         let token = '';
 
-        function msg(el, text, err = false) {
+        function setText(el, text, kind) {
             el.textContent = text;
-            el.style.color = err ? 'red' : 'green';
+            el.style.color = kind === 'error' ? 'red' : kind === 'ok' ? 'green' : '#333';
         }
 
         function setCookie(name, value, days = 1) {
             const expires = new Date(Date.now() + days * 864e5).toUTCString();
-            document.cookie = name + '=' + encodeURIComponent(value) + '; expires=' + expires + '; path=/';
+            document.cookie = name + '=' + encodeURIComponent(value) +
+                '; expires=' + expires + '; path=/; SameSite=Lax';
         }
 
         function getCookie(name) {
-            return document.cookie.split('; ').reduce((r, v) => {
-                const parts = v.split('='); return parts[0] === name ? decodeURIComponent(parts[1]) : r;
+            return document.cookie.split('; ').reduce((acc, item) => {
+                const parts = item.split('=');
+                return parts[0] === name ? decodeURIComponent(parts[1]) : acc;
             }, '');
         }
 
         function deleteCookie(name) {
-            document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+            document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax';
+        }
+
+        // Сервер всегда отвечает JSON, но клиент не должен падать, если это не так.
+        async function readJSON(res) {
+            const text = await res.text();
+            if (!text) return {};
+            try {
+                return JSON.parse(text);
+            } catch (e) {
+                return { error: text };
+            }
+        }
+
+        function showAuth(message, isError) {
+            document.getElementById('calc').classList.add('hidden');
+            document.getElementById('auth').classList.remove('hidden');
+            if (message !== undefined) {
+                setText(document.getElementById('auth-msg'), message, isError ? 'error' : 'ok');
+            }
         }
 
         function showCalc() {
             document.getElementById('auth').classList.add('hidden');
             document.getElementById('calc').classList.remove('hidden');
-            msg(document.getElementById('result'), '');
+            setText(document.getElementById('result'), '');
+        }
+
+        function logout(message, isError) {
+            token = '';
+            deleteCookie('token');
+            document.getElementById('password').value = '';
+            showAuth(message, isError);
         }
 
         async function auth(path) {
-            const user = document.getElementById('username').value;
+            const user = document.getElementById('username').value.trim();
             const pass = document.getElementById('password').value;
-            const res = await fetch(`${api}/${path}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: user, password: pass })
-            });
-            const data = await res.json();
-            if (res.ok && data.token) {
-                token = data.token;
-                setCookie('token', token);
-                msg(document.getElementById('auth-msg'), 'OK');
-                showCalc();
-            } else {
-                msg(document.getElementById('auth-msg'), data.error || 'Fail', true);
+            if (!user || !pass) {
+                setText(document.getElementById('auth-msg'), 'Введите логин и пароль', 'error');
+                return;
             }
+            let data;
+            try {
+                const res = await fetch(api + '/' + path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: user, password: pass })
+                });
+                data = await readJSON(res);
+                if (!res.ok || !data.token) {
+                    setText(document.getElementById('auth-msg'), data.error || 'Не удалось войти', 'error');
+                    return;
+                }
+            } catch (e) {
+                setText(document.getElementById('auth-msg'), 'Сеть недоступна: ' + e.message, 'error');
+                return;
+            }
+            token = data.token;
+            setCookie('token', token);
+            setText(document.getElementById('auth-msg'), '');
+            showCalc();
         }
 
         document.getElementById('btn-register').onclick = () => auth('register');
         document.getElementById('btn-login').onclick = () => auth('login');
 
         document.getElementById('btn-calc').onclick = async () => {
-            const expression = document.getElementById('expr').value;
-            document.getElementById('result').textContent = '';
-            const res = await fetch(`${api}/calculate`, {
-                method: 'POST', headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                }, body: JSON.stringify({ expression })
-            });
-            const data = await res.json();
-            if (!res.ok) {
-                msg(document.getElementById('result'), data.error || 'Error', true);
+            const expression = document.getElementById('expr').value.trim();
+            const out = document.getElementById('result');
+            if (!expression) {
+                setText(out, 'Введите выражение', 'error');
                 return;
             }
-            const id = data.id;
-            msg(document.getElementById('result'), 'Calculating...');
+
+            setText(out, 'Считаю…');
+            let id;
+            try {
+                const res = await fetch(api + '/calculate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + token
+                    },
+                    body: JSON.stringify({ expression })
+                });
+                const data = await readJSON(res);
+                if (res.status === 401) {
+                    logout('Сессия истекла, войдите снова', true);
+                    return;
+                }
+                if (!res.ok) {
+                    setText(out, data.error || 'Ошибка запроса', 'error');
+                    return;
+                }
+                id = data.id;
+                if (!id) {
+                    setText(out, 'Сервер не вернул идентификатор', 'error');
+                    return;
+                }
+            } catch (e) {
+                setText(out, 'Сеть недоступна: ' + e.message, 'error');
+                return;
+            }
+
+            const started = Date.now();
             const poll = setInterval(async () => {
+                if (Date.now() - started > pollTimeoutMs) {
+                    clearInterval(poll);
+                    setText(out, 'Истекло время ожидания: агенты не ответили', 'error');
+                    return;
+                }
                 try {
-                    const r = await fetch(`${api}/expressions/${id}`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
+                    const res = await fetch(api + '/expressions/' + encodeURIComponent(id), {
+                        headers: { 'Authorization': 'Bearer ' + token }
                     });
-                    const { expression: exprData } = await r.json();
-                    if (exprData.status === 'completed') {
+                    const data = await readJSON(res);
+                    if (res.status === 401) {
                         clearInterval(poll);
-                        msg(document.getElementById('result'), 'Result: ' + exprData.result);
-                    } else if (exprData.status === 'error') {
+                        logout('Сессия истекла, войдите снова', true);
+                        return;
+                    }
+                    if (!res.ok) {
                         clearInterval(poll);
-                        msg(document.getElementById('result'), exprData.error || 'Error', true);
+                        setText(out, data.error || 'Ошибка запроса', 'error');
+                        return;
+                    }
+                    const expr = data.expression;
+                    if (!expr) {
+                        clearInterval(poll);
+                        setText(out, 'Пустой ответ сервера', 'error');
+                        return;
+                    }
+                    if (expr.status === 'completed') {
+                        clearInterval(poll);
+                        setText(out, 'Результат: ' + expr.result, 'ok');
+                    } else if (expr.status === 'error') {
+                        clearInterval(poll);
+                        setText(out, expr.error || 'Не удалось вычислить', 'error');
                     }
                 } catch (e) {
                     clearInterval(poll);
-                    msg(document.getElementById('result'), 'Polling error', true);
+                    setText(out, 'Сеть недоступна: ' + e.message, 'error');
                 }
-            }, 500);
+            }, pollIntervalMs);
         };
 
-        document.getElementById('btn-logout').onclick = () => {
-            deleteCookie('token');
-            document.getElementById('calc').classList.add('hidden');
-            document.getElementById('auth').classList.remove('hidden');
-            token = '';
-            msg(document.getElementById('auth-msg'), 'Logged out');
-        };
+        document.getElementById('btn-logout').onclick = () => logout('Вы вышли', false);
 
         window.onload = () => {
-            const t = getCookie('token');
-            if (t) { token = t; showCalc(); }
+            const saved = getCookie('token');
+            if (saved) {
+                token = saved;
+                showCalc();
+            }
         };
     </script>
 </body>

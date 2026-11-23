@@ -58,7 +58,7 @@ func main() {
 		case hasPrefix(r.URL.Path, "/api/v1/tasks/"):
 			handler.HandleTaskByID(w, r)
 		default:
-			http.NotFound(w, r)
+			handler.HandleNotFound(w)
 		}
 	})
 	mux.Handle("/api/v1/calculate", handler.AuthMiddleware(apiHandler))
@@ -73,7 +73,14 @@ func main() {
 		handleAgentToken(w, r, cfg)
 	})
 
-	mux.Handle("/", http.FileServer(http.Dir("./static")))
+	staticDir := os.Getenv("STATIC_DIR")
+	if staticDir == "" {
+		staticDir = "./static"
+	}
+	if _, err := os.Stat(staticDir); err != nil {
+		logger.Warn("static directory %q is not available: %v", staticDir, err)
+	}
+	mux.Handle("/", http.FileServer(http.Dir(staticDir)))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -86,7 +93,12 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go startMaintenance(ctx, cfg.TaskPollInterval)
+	// Обслуживание очереди — редкая операция. Частый тикер зря нагружает WAL.
+	maintenanceInterval := cfg.TaskPollInterval
+	if maintenanceInterval < 2*time.Second {
+		maintenanceInterval = 2 * time.Second
+	}
+	go startMaintenance(ctx, maintenanceInterval)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -136,18 +148,18 @@ func startMaintenance(ctx context.Context, interval time.Duration) {
 
 func handleAgentToken(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		handler.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	provided := r.Header.Get("X-Bootstrap-Key")
 	if subtle.ConstantTimeCompare([]byte(provided), []byte(cfg.AgentBootstrapKey)) != 1 {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+		handler.WriteError(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	token, err := handler.GenerateAgentToken()
 	if err != nil {
 		logger.Error("generate agent token: %v", err)
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		handler.WriteError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeToken(w, token)
