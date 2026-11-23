@@ -2,89 +2,136 @@ package store
 
 import (
 	"calc-service/pkg/database"
-	"calc-service/pkg/logger"
 	"database/sql"
 	"fmt"
 	"time"
 )
 
-// Expression represents a mathematical expression
+// Expression represents a mathematical expression.
 type Expression struct {
 	ID         string    `json:"id"`
+	UserID     string    `json:"user_id"`
 	Expression string    `json:"expression"`
 	Status     string    `json:"status"`
-	Result     float64   `json:"result,omitempty"`
+	Result     float64   `json:"result"`
+	Error      string    `json:"error,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// NewExpression creates a new expression record
-func NewExpression(exprText, userID string) (*Expression, error) {
-	id := fmt.Sprintf("expr-%d", time.Now().UnixNano())
-	now := time.Now()
+const exprColumns = `id, user_id, expression, status, COALESCE(result, 0), COALESCE(error, ''), created_at`
 
-	expr := &Expression{
-		ID:         id,
-		Expression: exprText,
-		Status:     "pending",
-		CreatedAt:  now,
-	}
-
-	// Вставка в базу данных с учетом userID
-	db := database.GetDB()
-	_, err := db.Exec(
-		"INSERT INTO expressions (id, user_id, expression, status, created_at) VALUES (?, ?, ?, ?, ?)",
-		expr.ID, userID, expr.Expression, expr.Status, expr.CreatedAt,
-	)
+func scanExpression(rows interface{ Scan(...interface{}) error }) (*Expression, error) {
+	var e Expression
+	err := rows.Scan(&e.ID, &e.UserID, &e.Expression, &e.Status, &e.Result, &e.Error, &e.CreatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert expression: %w", err)
+		return nil, err
 	}
+	return &e, nil
+}
 
+// CreateExpressionWithTasks создаёт выражение и его задачи в одной транзакции.
+func CreateExpressionWithTasks(id, exprText, userID string, tasks []*Task) (*Expression, error) {
+	expr := &Expression{
+		ID: id, UserID: userID, Expression: exprText,
+		Status: "pending", CreatedAt: time.Now(),
+	}
+	err := database.Transaction(func(tx *sql.Tx) error {
+		if _, err := tx.Exec(
+			`INSERT INTO expressions (id, user_id, expression, status, created_at) VALUES (?, ?, ?, ?, ?)`,
+			expr.ID, expr.UserID, expr.Expression, expr.Status, expr.CreatedAt,
+		); err != nil {
+			return fmt.Errorf("insert expression: %w", err)
+		}
+		for _, t := range tasks {
+			if _, err := tx.Exec(
+				`INSERT INTO tasks (
+					id, expression_id, user_id, arg1, arg2, operator, operation_time, completed, status
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+				t.ID, expr.ID, expr.UserID, t.Arg1, t.Arg2, t.Operator, t.OperationTime, t.Completed,
+			); err != nil {
+				return fmt.Errorf("insert task %s: %w", t.ID, err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
 	return expr, nil
 }
 
-// GetExpression retrieves an expression by ID
-func GetExpression(id string) (*Expression, bool) {
-	db := database.GetDB()
-	var expr Expression
-
-	err := db.QueryRow(
-		"SELECT id, expression, status, COALESCE(result, 0), created_at FROM expressions WHERE id = ?",
-		id,
-	).Scan(&expr.ID, &expr.Expression, &expr.Status, &expr.Result, &expr.CreatedAt)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, false
-		}
-		logger.Error("Database error in GetExpression: %v", err)
-		return nil, false
+// GetExpression возвращает выражение по ID. Владельца проверяет вызывающий.
+func GetExpression(id string) (*Expression, bool, error) {
+	e, err := scanExpression(database.GetDB().QueryRow(
+		`SELECT `+exprColumns+` FROM expressions WHERE id = ?`, id,
+	))
+	if err == sql.ErrNoRows {
+		return nil, false, nil
 	}
-
-	return &expr, true
+	if err != nil {
+		return nil, false, fmt.Errorf("get expression %s: %w", id, err)
+	}
+	return e, true, nil
 }
 
-// ListExpressions возвращает все выражения для конкретного пользователя
-func ListExpressions(userID string) []*Expression {
-	db := database.GetDB()
-	rows, err := db.Query(
-		"SELECT id, expression, status, COALESCE(result, 0), created_at FROM expressions WHERE user_id = ? ORDER BY created_at DESC",
-		userID,
+// ListExpressions возвращает выражения пользователя.
+func ListExpressions(userID string) ([]*Expression, error) {
+	rows, err := database.GetDB().Query(
+		`SELECT `+exprColumns+` FROM expressions WHERE user_id = ? ORDER BY created_at DESC`, userID,
 	)
 	if err != nil {
-		logger.Error("Database error in ListExpressions: %v", err)
-		return []*Expression{}
+		return nil, fmt.Errorf("list expressions: %w", err)
 	}
 	defer rows.Close()
 
-	var expressions []*Expression
+	var result []*Expression
 	for rows.Next() {
-		var expr Expression
-		if err := rows.Scan(&expr.ID, &expr.Expression, &expr.Status, &expr.Result, &expr.CreatedAt); err != nil {
-			logger.Error("Error scanning expression row: %v", err)
-			continue
+		e, err := scanExpression(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan expression: %w", err)
 		}
-		expressions = append(expressions, &expr)
+		result = append(result, e)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate expressions: %w", err)
+	}
+	return result, nil
+}
 
-	return expressions
+// UpdateExpressionStatus обновляет статус, результат и ошибку выражения.
+func UpdateExpressionStatus(exprID, status string, result float64, errText string) error {
+	res, err := database.GetDB().Exec(
+		`UPDATE expressions SET status = ?, result = ?, error = ? WHERE id = ?`,
+		status, result, errText, exprID,
+	)
+	if err != nil {
+		return fmt.Errorf("update expression status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("expression %s not found", exprID)
+	}
+	return nil
+}
+
+// ExpireStaleExpressions закрывает выражения, которые не завершились за timeout.
+// Без этого клиент опрашивает статус вечно, если агенты недоступны.
+func ExpireStaleExpressions(timeout time.Duration) (int, error) {
+	cutoff := time.Now().Add(-timeout)
+	res, err := database.GetDB().Exec(
+		`UPDATE expressions SET status = 'error', error = 'expression timed out'
+		 WHERE status IN ('pending', 'in_progress') AND created_at < ?`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("expire expressions: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("expire expressions rows: %w", err)
+	}
+	return int(n), nil
 }

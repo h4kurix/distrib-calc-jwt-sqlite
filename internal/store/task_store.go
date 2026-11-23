@@ -2,12 +2,12 @@ package store
 
 import (
 	"calc-service/pkg/database"
-	"calc-service/pkg/logger"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
-// Task represents an atomic calculation operation
+// Task represents an atomic calculation operation.
 type Task struct {
 	ID            string  `json:"id"`
 	ExpressionID  string  `json:"expression_id"`
@@ -17,264 +17,233 @@ type Task struct {
 	OperationTime int     `json:"operation_time"`
 	Result        float64 `json:"result,omitempty"`
 	Completed     bool    `json:"-"`
+	Status        string  `json:"status,omitempty"`
+	Attempts      int     `json:"attempts,omitempty"`
+	Error         string  `json:"error,omitempty"`
 	UserID        string  `json:"user_id"`
 }
 
-// RegisterTasks ассоциирует задачи с выражением и пользователем
-func RegisterTasks(exprID, userID string, tasks []*Task) error {
-	return database.Transaction(func(tx *sql.Tx) error {
-		for _, task := range tasks {
-			_, err := tx.Exec(
-				`INSERT INTO tasks (
-					id, expression_id, user_id, arg1, arg2, operator, operation_time, completed
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				task.ID, exprID, userID, task.Arg1, task.Arg2, task.Operator, task.OperationTime,
-				task.Completed,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to insert task %s: %w", task.ID, err)
-			}
-		}
-		return nil
-	})
-}
+const taskColumns = `id, expression_id, user_id, arg1, arg2, operator, operation_time,
+	COALESCE(result, 0), completed, status, attempts, COALESCE(error, '')`
 
-// GetTasksByExpression возвращает все задачи для данного выражения и пользователя
-func GetTasksByExpression(exprID, userID string) ([]*Task, error) {
-	db := database.GetDB()
-	rows, err := db.Query(
-		`SELECT 
-			id, expression_id, user_id, arg1, arg2, operator, operation_time, 
-			COALESCE(result, 0), completed 
-		FROM tasks 
-		WHERE expression_id = ? AND user_id = ?`,
-		exprID, userID,
+func scanTask(row interface{ Scan(...interface{}) error }) (*Task, error) {
+	var t Task
+	err := row.Scan(
+		&t.ID, &t.ExpressionID, &t.UserID, &t.Arg1, &t.Arg2, &t.Operator,
+		&t.OperationTime, &t.Result, &t.Completed, &t.Status, &t.Attempts, &t.Error,
 	)
 	if err != nil {
 		return nil, err
+	}
+	return &t, nil
+}
+
+// GetTasksByExpression возвращает задачи в порядке создания.
+func GetTasksByExpression(exprID, userID string) ([]*Task, error) {
+	rows, err := database.GetDB().Query(
+		`SELECT `+taskColumns+` FROM tasks
+		WHERE expression_id = ? AND user_id = ?
+		ORDER BY rowid ASC`, exprID, userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get tasks: %w", err)
 	}
 	defer rows.Close()
 
 	var tasks []*Task
 	for rows.Next() {
-		var task Task
-		if err := rows.Scan(
-			&task.ID, &task.ExpressionID, &task.UserID, &task.Arg1, &task.Arg2, &task.Operator, &task.OperationTime,
-			&task.Result, &task.Completed,
-		); err != nil {
-			return nil, err
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan task: %w", err)
 		}
-		tasks = append(tasks, &task)
+		tasks = append(tasks, t)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tasks: %w", err)
+	}
 	return tasks, nil
 }
 
-// GetExecutableTasks возвращает задачи, готовые к выполнению
-func GetExecutableTasks(exprID, userID string) ([]*Task, error) {
-	tasks, err := GetTasksByExpression(exprID, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create lookup map for completed tasks
-	completedTasks := make(map[string]bool)
-	for _, task := range tasks {
-		if task.Completed {
-			completedTasks[task.ID] = true
+// ClaimNextTask атомарно захватывает одну готовую задачу.
+func ClaimNextTask() (*Task, bool, error) {
+	for attempt := 0; attempt < 8; attempt++ {
+		var task *Task
+		err := database.Transaction(func(tx *sql.Tx) error {
+			row := tx.QueryRow(
+				`SELECT ` + taskColumns + ` FROM tasks t
+				WHERE t.status = 'pending'
+				AND NOT EXISTS (
+					SELECT 1 FROM tasks d
+					WHERE d.status != 'completed' AND 'task:' || d.id IN (t.arg1, t.arg2)
+				)
+				ORDER BY t.rowid ASC LIMIT 1`,
+			)
+			t, err := scanTask(row)
+			if err == sql.ErrNoRows {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("select task: %w", err)
+			}
+			res, err := tx.Exec(
+				`UPDATE tasks SET status = 'claimed', attempts = attempts + 1, claimed_at = ?
+				 WHERE id = ? AND status = 'pending'`, time.Now(), t.ID,
+			)
+			if err != nil {
+				return fmt.Errorf("claim task: %w", err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("rows affected: %w", err)
+			}
+			if n == 1 {
+				t.Status = "claimed"
+				t.Attempts++
+				task = t
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		if task != nil {
+			return task, true, nil
 		}
 	}
-
-	// Filter executable tasks (not completed and all dependencies resolved)
-	var executableTasks []*Task
-	for _, task := range tasks {
-		if task.Completed {
-			continue
-		}
-
-		// Check if dependencies are resolved
-		arg1Ready := !isTaskReference(task.Arg1) || isTaskCompleted(task.Arg1[5:], completedTasks)
-		arg2Ready := !isTaskReference(task.Arg2) || isTaskCompleted(task.Arg2[5:], completedTasks)
-
-		if arg1Ready && arg2Ready {
-			executableTasks = append(executableTasks, task)
-		}
-	}
-
-	return executableTasks, nil
+	return nil, false, nil
 }
 
-// GetNextExecutableTask returns a task that is ready to be processed
-func GetNextExecutableTask() (*Task, bool) {
-	db := database.GetDB()
-
-	// Подзапрос для получения ID задач, у которых есть зависимости от незавершенных задач
-	query := `
-		SELECT 
-			t.id, t.expression_id, t.arg1, t.arg2, t.operator, t.operation_time, 
-			COALESCE(t.result, 0), t.completed 
-		FROM tasks t
-		WHERE t.completed = false
-		AND NOT EXISTS (
-			-- Проверка зависимостей Arg1
-			SELECT 1 FROM tasks t2
-			WHERE t2.completed = false
-			AND CONCAT('task:', t2.id) = t.arg1
-		)
-		AND NOT EXISTS (
-			-- Проверка зависимостей Arg2
-			SELECT 1 FROM tasks t2
-			WHERE t2.completed = false
-			AND CONCAT('task:', t2.id) = t.arg2
-		)
-		LIMIT 1
-	`
-
-	var task Task
-	err := db.QueryRow(query).Scan(
-		&task.ID, &task.ExpressionID, &task.Arg1, &task.Arg2, &task.Operator, &task.OperationTime,
-		&task.Result, &task.Completed,
+// ReleaseStaleTasks возвращает в очередь задачи, зависшие после падения агента.
+func ReleaseStaleTasks(timeout time.Duration) (int, error) {
+	res, err := database.GetDB().Exec(
+		`UPDATE tasks SET status = 'pending' WHERE status = 'claimed' AND claimed_at < ?`,
+		time.Now().Add(-timeout),
 	)
-
 	if err != nil {
-		if err != sql.ErrNoRows {
-			logger.Error("Database error in GetNextExecutableTask: %v", err)
-		}
-		return nil, false
+		return 0, fmt.Errorf("release stale tasks: %w", err)
 	}
-
-	return &task, true
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
-// GetTask retrieves a task by ID
-func GetTask(taskID string) (*Task, bool) {
-	db := database.GetDB()
-
-	var task Task
-	err := db.QueryRow(
-		`SELECT 
-			id, expression_id, arg1, arg2, operator, operation_time, 
-			COALESCE(result, 0), completed 
-		FROM tasks 
-		WHERE id = ?`,
-		taskID,
-	).Scan(
-		&task.ID, &task.ExpressionID, &task.Arg1, &task.Arg2, &task.Operator, &task.OperationTime,
-		&task.Result, &task.Completed,
-	)
-
-	if err != nil {
-		if err != sql.ErrNoRows {
-			logger.Error("Database error in GetTask: %v", err)
-		}
-		return nil, false
+// GetTask возвращает задачу по ID.
+func GetTask(taskID string) (*Task, bool, error) {
+	t, err := scanTask(database.GetDB().QueryRow(
+		`SELECT `+taskColumns+` FROM tasks WHERE id = ?`, taskID,
+	))
+	if err == sql.ErrNoRows {
+		return nil, false, nil
 	}
-
-	return &task, true
+	if err != nil {
+		return nil, false, fmt.Errorf("get task %s: %w", taskID, err)
+	}
+	return t, true, nil
 }
 
-// CompleteTask marks a task as completed
+// CompleteTask идемпотентно завершает задачу и не перезаписывает готовый результат.
 func CompleteTask(taskID string, result float64) error {
-	db := database.GetDB()
-	_, err := db.Exec(
-		"UPDATE tasks SET completed = true, result = ? WHERE id = ?",
-		result, taskID,
+	return database.Transaction(func(tx *sql.Tx) error {
+		var status string
+		if err := tx.QueryRow(`SELECT status FROM tasks WHERE id = ?`, taskID).Scan(&status); err != nil {
+			return fmt.Errorf("task %s: %w", taskID, err)
+		}
+		if status == "completed" {
+			return nil
+		}
+		res, err := tx.Exec(
+			`UPDATE tasks SET completed = 1, result = ?, status = 'completed', error = ''
+			 WHERE id = ? AND status IN ('claimed', 'error')`,
+			result, taskID,
+		)
+		if err != nil {
+			return fmt.Errorf("complete task: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		}
+		if n != 1 {
+			return fmt.Errorf("task %s is not claimed (status=%s)", taskID, status)
+		}
+		return nil
+	})
+}
+
+// FailTask отмечает задачу как ошибочную.
+func FailTask(taskID, errText string) error {
+	res, err := database.GetDB().Exec(
+		`UPDATE tasks SET status = 'error', error = ?, claimed_at = NULL WHERE id = ? AND status = 'claimed'`,
+		errText, taskID,
 	)
 	if err != nil {
-		return fmt.Errorf("CompleteTask: %w", err)
+		return fmt.Errorf("fail task: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("fail task rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("task %s is not claimed", taskID)
 	}
 	return nil
 }
 
-// Helper functions
-func isTaskReference(arg string) bool {
-	return len(arg) > 5 && arg[:5] == "task:"
-}
-
-func isTaskCompleted(taskID string, completedTasks map[string]bool) bool {
-	return completedTasks[taskID]
-}
-
-// GetUsersWithPendingExpressions returns a list of user IDs who have pending expressions
+// GetUsersWithPendingExpressions возвращает пользователей с незавершёнными выражениями.
 func GetUsersWithPendingExpressions() ([]string, error) {
-	db := database.GetDB()
-
-	// Query for distinct users with pending expressions
-	rows, err := db.Query(`
-		SELECT DISTINCT user_id 
-		FROM expressions 
-		WHERE status = 'pending'
-	`)
+	rows, err := database.GetDB().Query(
+		`SELECT DISTINCT user_id FROM expressions WHERE status IN ('pending', 'in_progress')`,
+	)
 	if err != nil {
-		logger.Error("Database error in GetUsersWithPendingExpressions: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("get pending users: %w", err)
 	}
 	defer rows.Close()
 
-	var userIDs []string
+	var ids []string
 	for rows.Next() {
-		var userID string
-		if err := rows.Scan(&userID); err != nil {
-			logger.Error("Error scanning user ID: %v", err)
-			continue
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
 		}
-		userIDs = append(userIDs, userID)
+		ids = append(ids, id)
 	}
-
-	return userIDs, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users: %w", err)
+	}
+	return ids, nil
 }
 
-// CountPendingTasks returns the count of all tasks that are pending
+// CountPendingTasks считает незавершённые задачи.
 func CountPendingTasks() (int, error) {
-	db := database.GetDB()
-
 	var count int
-	err := db.QueryRow(`
-		SELECT COUNT(*) 
-		FROM tasks 
-		WHERE completed = false
-	`).Scan(&count)
-
+	err := database.GetDB().QueryRow(
+		`SELECT COUNT(*) FROM tasks WHERE status IN ('pending', 'claimed')`,
+	).Scan(&count)
 	if err != nil {
-		logger.Error("Database error in CountPendingTasks: %v", err)
-		return 0, err
+		return 0, fmt.Errorf("count pending tasks: %w", err)
 	}
-
 	return count, nil
 }
 
-// CountIncompleteTasks возвращает число тасков для exprID, которые ещё не completed
+// CountIncompleteTasks считает задачи, которые ещё не завершены успешно.
 func CountIncompleteTasks(exprID string) (int, error) {
-	db := database.GetDB()
-	var cnt int
-	err := db.QueryRow(
-		`SELECT count(*) 
-        FROM tasks 
-        WHERE expression_id = ? 
-        AND completed = 0`,
-		exprID,
-	).Scan(&cnt)
+	var count int
+	err := database.GetDB().QueryRow(
+		`SELECT COUNT(*) FROM tasks WHERE expression_id = ? AND status != 'completed'`, exprID,
+	).Scan(&count)
 	if err != nil {
-		return 0, fmt.Errorf("CountIncompleteTasks: %w", err)
+		return 0, fmt.Errorf("count incomplete tasks: %w", err)
 	}
-	return cnt, nil
+	return count, nil
 }
 
-// UpdateExpressionStatus обновляет status и result в таблице expressions
-func UpdateExpressionStatus(exprID, status string, result float64) error {
-	db := database.GetDB()
-	res, err := db.Exec(
-		`UPDATE expressions
-        SET status = ?, result = ?
-        WHERE id = ?`,
-		status, result, exprID,
-	)
+// CountFailedTasks считает ошибочные задачи выражения.
+func CountFailedTasks(exprID string) (int, error) {
+	var count int
+	err := database.GetDB().QueryRow(
+		`SELECT COUNT(*) FROM tasks WHERE expression_id = ? AND status = 'error'`, exprID,
+	).Scan(&count)
 	if err != nil {
-		return fmt.Errorf("UpdateExpressionStatus exec: %w", err)
+		return 0, fmt.Errorf("count failed tasks: %w", err)
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return fmt.Errorf("UpdateExpressionStatus: no rows affected for exprID=%s", exprID)
-	}
-	return nil
+	return count, nil
 }

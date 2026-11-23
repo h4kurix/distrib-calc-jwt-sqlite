@@ -7,13 +7,14 @@ import (
 	"strings"
 )
 
+// AggregateResults вычисляет результат выражения по результатам задач.
 func AggregateResults(tasks []*store.Task) (float64, error) {
-	results := make(map[string]float64)
-	for _, task := range tasks {
-		if !task.Completed {
-			return 0, fmt.Errorf("task %s is not completed yet", task.ID)
+	results := make(map[string]float64, len(tasks))
+	for _, t := range tasks {
+		if t.Status != "completed" && !t.Completed {
+			return 0, fmt.Errorf("task %s is not completed", t.ID)
 		}
-		results[task.ID] = task.Result
+		results[t.ID] = t.Result
 	}
 
 	root, err := getRootNode(tasks)
@@ -23,36 +24,46 @@ func AggregateResults(tasks []*store.Task) (float64, error) {
 	return evaluateWithResults(root, results)
 }
 
+// getRootNode находит задачу, которая не является зависимостью другой задачи.
 func getRootNode(tasks []*store.Task) (*Node, error) {
-	nodes := make(map[string]*Node)
-	for _, t := range tasks {
-		nodes[t.ID] = &Node{
-			Value:  t.Operator,
-			TaskID: t.ID,
-		}
+	if len(tasks) == 0 {
+		return nil, fmt.Errorf("no tasks to aggregate")
 	}
 
+	nodes := make(map[string]*Node, len(tasks))
+	referenced := make(map[string]bool, len(tasks))
+	for _, t := range tasks {
+		nodes[t.ID] = &Node{Value: t.Operator, TaskID: t.ID}
+	}
 	for _, t := range tasks {
 		n := nodes[t.ID]
 		if strings.HasPrefix(t.Arg1, "task:") {
-			childID := strings.TrimPrefix(t.Arg1, "task:")
-			n.Left = nodes[childID]
+			id := strings.TrimPrefix(t.Arg1, "task:")
+			referenced[id] = true
+			n.Left = nodes[id]
 		} else {
 			n.Left = &Node{Value: t.Arg1}
 		}
-
 		if strings.HasPrefix(t.Arg2, "task:") {
-			childID := strings.TrimPrefix(t.Arg2, "task:")
-			n.Right = nodes[childID]
+			id := strings.TrimPrefix(t.Arg2, "task:")
+			referenced[id] = true
+			n.Right = nodes[id]
 		} else {
 			n.Right = &Node{Value: t.Arg2}
 		}
 	}
 
-	if len(tasks) == 0 {
-		return nil, fmt.Errorf("no tasks to aggregate")
+	root := nodes[tasks[len(tasks)-1].ID]
+	for _, t := range tasks {
+		if !referenced[t.ID] {
+			root = nodes[t.ID]
+			break
+		}
 	}
-	return nodes[tasks[len(tasks)-1].ID], nil
+	if root == nil {
+		return nil, fmt.Errorf("could not find root task")
+	}
+	return root, nil
 }
 
 func evaluateWithResults(n *Node, results map[string]float64) (float64, error) {

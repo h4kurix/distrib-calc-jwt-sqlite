@@ -1,12 +1,12 @@
 package handler
 
 import (
+	"net/http"
+	"time"
+
 	"calc-service/internal/calculator"
 	"calc-service/internal/store"
 	"calc-service/pkg/logger"
-	"encoding/json"
-	"net/http"
-	"strings"
 )
 
 type TaskResponse struct {
@@ -18,200 +18,184 @@ type TaskResultRequest struct {
 	Result float64 `json:"result"`
 }
 
-// TaskHandler handles getting executable tasks and posting task results
+type TaskFailureRequest struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+const (
+	staleTaskTimeout  = 2 * time.Minute
+	expressionTimeout = 10 * time.Minute
+)
+
+// TaskHandler обрабатывает выдачу задач и приём результатов.
 func TaskHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		handleGetTask(w, r)
+		handleGetTask(w)
 	case http.MethodPost:
 		handlePostTaskResult(w, r)
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
 }
 
-// handleGetTask returns an executable task from any user
-func handleGetTask(w http.ResponseWriter, _ *http.Request) {
-	task, found := store.GetNextExecutableTask()
+func handleGetTask(w http.ResponseWriter) {
+	task, found, err := store.ClaimNextTask()
+	if err != nil {
+		logAndFail(w, "claim task", err)
+		return
+	}
 	if !found {
+		// Пустая очередь — это не ошибка: агент просто повторит запрос.
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-
-	response := TaskResponse{Task: task}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		logger.Error("Failed to encode task: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-	}
+	writeJSON(w, http.StatusOK, TaskResponse{Task: task})
 }
 
-// handlePostTaskResult updates a task with its result and rolls up expression status
 func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 	var req TaskResultRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Error("Failed to decode task result: %v", err)
-		http.Error(w, "Invalid request body", http.StatusUnprocessableEntity)
+	if err := decodeJSONBody(w, r, &req); err != nil || req.ID == "" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	task, exists := store.GetTask(req.ID)
-	if !exists {
-		http.Error(w, "Task not found", http.StatusNotFound)
-		return
-	}
-
-	if err := store.CompleteTask(req.ID, req.Result); err != nil {
-		logger.Error("Failed to complete task: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	// апдейтим статус выражения
-	exprID := task.ExpressionID
-	remaining, err := store.CountIncompleteTasks(exprID)
+	task, found, err := store.GetTask(req.ID)
 	if err != nil {
-		logger.Error("CountIncompleteTasks: %v", err)
-	} else if remaining == 0 {
-		// все таски готовы → completed, сохраняем финальный результат
-		if err := store.UpdateExpressionStatus(exprID, "completed", req.Result); err != nil {
-			logger.Error("UpdateExpressionStatus to completed: %v", err)
-		}
-	} else {
-		// первый результат пришёл → in_progress
-		if err := store.UpdateExpressionStatus(exprID, "in_progress", 0); err != nil {
-			logger.Error("UpdateExpressionStatus to in_progress: %v", err)
-		}
+		logAndFail(w, "get task", err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := store.CompleteTask(req.ID, req.Result); err != nil {
+		logAndFail(w, "complete task", err)
+		return
 	}
 
+	if err := finalizeExpression(task.ExpressionID, task.UserID); err != nil {
+		logAndFail(w, "finalize expression "+task.ExpressionID, err)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
-// HandleTaskByID gets a completed task by ID
+// finalizeExpression обновляет статус выражения в одной транзакции.
+func finalizeExpression(exprID, userID string) error {
+	return store.FinalizeExpression(exprID, userID, calculator.AggregateResults)
+}
+
+// HandleTaskByID возвращает результат задачи владельцу.
 func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-
-	// Get userID from context for authorization
 	userID := getUserIDFromContext(r.Context())
 	if userID == "" {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
-	task, exists := store.GetTask(id)
-	if !exists {
-		http.Error(w, "Task not found", http.StatusNotFound)
+	id, ok := pathID(r.URL.Path, "/api/v1/tasks/")
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-
-	// Verify this task belongs to the authenticated user
-	if task.UserID != userID {
-		http.Error(w, "Forbidden", http.StatusForbidden)
+	task, found, err := store.GetTask(id)
+	if err != nil {
+		logAndFail(w, "get task", err)
 		return
 	}
-
+	if !found || task.UserID != userID {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
 	if !task.Completed {
-		http.Error(w, "Task not completed", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "task not completed")
 		return
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(struct {
+	writeJSON(w, http.StatusOK, struct {
 		Result float64 `json:"result"`
 	}{Result: task.Result})
 }
 
-// HandleInternalTaskByID возвращает результат задачи любому внутреннему клиенту
+// HandleTaskFailure принимает сообщение об ошибке вычисления задачи.
+func HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	var req TaskFailureRequest
+	if err := decodeJSONBody(w, r, &req); err != nil || req.ID == "" {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	task, found, err := store.GetTask(req.ID)
+	if err != nil {
+		logAndFail(w, "get task", err)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := store.FailTask(req.ID, req.Error); err != nil {
+		logAndFail(w, "fail task "+req.ID, err)
+		return
+	}
+	if err := finalizeExpression(task.ExpressionID, task.UserID); err != nil {
+		logAndFail(w, "finalize expression "+task.ExpressionID, err)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// HandleInternalTaskByID отдаёт результат задачи агенту по внутреннему API.
 func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/internal/task/result/")
-	task, exists := store.GetTask(id)
-	if !exists || !task.Completed {
-		http.Error(w, "Not found", http.StatusNotFound)
+	id, ok := pathID(r.URL.Path, "/internal/task/result/")
+	if !ok {
+		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(struct {
+	task, found, err := store.GetTask(id)
+	if err != nil {
+		logAndFail(w, "get task", err)
+		return
+	}
+	if !found || !task.Completed {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
 		Result float64 `json:"result"`
 	}{Result: task.Result})
 }
 
-// ProcessPendingTasks processes all pending tasks from all users
+// ProcessPendingTasks выполняет обслуживание очереди: возвращает зависшие
+// задачи и закрывает выражения, которые уже не могут завершиться.
 func ProcessPendingTasks() {
-	// Get all users with pending expressions
-	userIDs, err := store.GetUsersWithPendingExpressions()
+	n, err := store.ReleaseStaleTasks(staleTaskTimeout)
 	if err != nil {
-		logger.Error("ProcessPendingTasks: Failed to get users with pending expressions: %v", err)
+		logger.Error("release stale tasks: %v", err)
 		return
 	}
-
-	// Process tasks for each user
-	for _, userID := range userIDs {
-		// Check for executable tasks and update expressions
-		ProcessUserTasks(userID)
+	if n > 0 {
+		logger.Warn("released %d stale tasks", n)
 	}
-}
 
-// ProcessUserTasks processes tasks for a specific user
-func ProcessUserTasks(userID string) {
-	expressions := store.ListExpressions(userID)
-
-	for _, expr := range expressions {
-		if expr.Status != "pending" && expr.Status != "in_progress" {
-			continue
-		}
-
-		// Проверяем executable таски и их выполнение
-		executableTasks, err := store.GetExecutableTasks(expr.ID, userID)
-		if err != nil {
-			logger.Error("ProcessUserTasks: Failed to get executable tasks for expr %s: %v", expr.ID, err)
-			continue
-		}
-
-		// Есть ли таски для выполнения?
-		if len(executableTasks) == 0 {
-			// Проверяем, остались ли незавершенные таски в принципе
-			incomplete, err := store.CountIncompleteTasks(expr.ID)
-			if err != nil {
-				logger.Error("ProcessUserTasks: CountIncompleteTasks failed: %v", err)
-				continue
-			}
-
-			// Если всё завершено, финализируем результат
-			if incomplete == 0 {
-				tasks, err := store.GetTasksByExpression(expr.ID, userID)
-				if err != nil {
-					logger.Error("ProcessUserTasks: GetTasksByExpression failed: %v", err)
-					continue
-				}
-
-				result, err := calculator.AggregateResults(tasks)
-				if err != nil {
-					logger.Error("ProcessUserTasks: AggregateResults failed: %v", err)
-					continue
-				}
-
-				err = store.UpdateExpressionStatus(expr.ID, "completed", result)
-				if err != nil {
-					logger.Error("ProcessUserTasks: UpdateExpressionStatus failed: %v", err)
-				}
-			}
-		} else if expr.Status == "pending" {
-			// Если есть executable таски и статус был pending, меняем на in_progress
-			err = store.UpdateExpressionStatus(expr.ID, "in_progress", 0)
-			if err != nil {
-				logger.Error("ProcessUserTasks: UpdateExpressionStatus to in_progress failed: %v", err)
-			}
-		}
+	expired, err := store.ExpireStaleExpressions(expressionTimeout)
+	if err != nil {
+		logger.Error("expire stale expressions: %v", err)
+		return
+	}
+	if expired > 0 {
+		logger.Warn("expired %d stale expressions", expired)
 	}
 }

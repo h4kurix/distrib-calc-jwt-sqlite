@@ -2,13 +2,14 @@ package calculator
 
 import (
 	"calc-service/internal/store"
+	"calc-service/pkg/logger"
 	"os"
 	"strconv"
 
 	"github.com/google/uuid"
 )
 
-// Синтаксический анализ: построение дерева выражения
+// Node — узел дерева выражения.
 type Node struct {
 	Value    string
 	Left     *Node
@@ -17,9 +18,9 @@ type Node struct {
 	Priority int
 }
 
-func generateTaskID() string {
-	return "task-" + uuid.New().String()
-}
+func newID(prefix string) string { return prefix + "-" + uuid.New().String() }
+
+func generateTaskID() string { return newID("task") }
 
 func getNodeReference(n *Node) string {
 	if n == nil {
@@ -45,56 +46,48 @@ func getOperationTime(op string) int {
 	default:
 		return 0
 	}
+
+	fallback := map[string]int{"+": 100, "-": 100, "*": 200, "/": 300}[op]
 	t, err := strconv.Atoi(envVar)
 	if err != nil {
-		switch op {
-		case "+", "-":
-			return 100
-		case "*":
-			return 200
-		case "/":
-			return 300
-		default:
-			return 0
-		}
+		return fallback
+	}
+	if t < 0 || t > maxOperationMS {
+		logger.Warn("operation time %d for %s is out of range, using %d", t, op, fallback)
+		return fallback
 	}
 	return t
 }
 
 func createTasksFromTree(exprID string, node *Node) ([]*store.Task, error) {
-	var tasks []*store.Task
 	if node == nil {
-		return tasks, nil
+		return nil, nil
 	}
-	// обход в пост-ордера
+	var tasks []*store.Task
 	if node.Left != nil {
-		childTasks, err := createTasksFromTree(exprID, node.Left)
+		child, err := createTasksFromTree(exprID, node.Left)
 		if err != nil {
 			return nil, err
 		}
-		tasks = append(tasks, childTasks...)
+		tasks = append(tasks, child...)
 	}
 	if node.Right != nil {
-		childTasks, err := createTasksFromTree(exprID, node.Right)
+		child, err := createTasksFromTree(exprID, node.Right)
 		if err != nil {
 			return nil, err
 		}
-		tasks = append(tasks, childTasks...)
+		tasks = append(tasks, child...)
 	}
 	if isOperator(node.Value) {
-		taskID := generateTaskID()
-		node.TaskID = taskID
-		arg1 := getNodeReference(node.Left)
-		arg2 := getNodeReference(node.Right)
-		task := &store.Task{
-			ID:            taskID,
+		node.TaskID = generateTaskID()
+		tasks = append(tasks, &store.Task{
+			ID:            node.TaskID,
 			ExpressionID:  exprID,
-			Arg1:          arg1,
-			Arg2:          arg2,
+			Arg1:          getNodeReference(node.Left),
+			Arg2:          getNodeReference(node.Right),
 			Operator:      node.Value,
 			OperationTime: getOperationTime(node.Value),
-		}
-		tasks = append(tasks, task)
+		})
 	}
 	return tasks, nil
 }

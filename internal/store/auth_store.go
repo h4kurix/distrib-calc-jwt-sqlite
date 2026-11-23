@@ -2,124 +2,102 @@ package store
 
 import (
 	"calc-service/pkg/database"
-	"calc-service/pkg/logger"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
-// User представляет пользователя
+var ErrUsernameExists = errors.New("username already exists")
+
+// User представляет пользователя.
 type User struct {
 	ID        string    `json:"id"`
 	Username  string    `json:"username"`
-	Password  string    `json:"-"` // Не показываем пароль в JSON
+	Password  string    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// CreateUser создает нового пользователя в базе данных
+// CreateUser создаёт нового пользователя.
 func CreateUser(username, password string) (*User, error) {
-	// Проверяем, существует ли уже пользователь с таким именем
+	if username == "" || len(username) > 64 {
+		return nil, fmt.Errorf("username must be 1-64 characters")
+	}
+	if len(password) < 8 {
+		return nil, fmt.Errorf("password must be at least 8 characters")
+	}
+
 	exists, err := UsernameExists(username)
 	if err != nil {
-		logger.Error("failed to check if username exists: %v", err)
-		return nil, fmt.Errorf("failed to check if username exists: %w", err)
+		return nil, err
 	}
 	if exists {
-		logger.Info("username already exists: %s", username)
-		return nil, fmt.Errorf("username already exists")
+		return nil, ErrUsernameExists
 	}
 
-	// Хэшируем пароль
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		logger.Error("failed to hash password: %v", err)
-		return nil, fmt.Errorf("failed to hash password: %w", err)
+		return nil, fmt.Errorf("hash password: %w", err)
 	}
-
-	// Создаем нового пользователя
-	id := fmt.Sprintf("user-%d", time.Now().UnixNano())
-	now := time.Now()
 
 	user := &User{
-		ID:        id,
+		ID:        fmt.Sprintf("user-%d", time.Now().UnixNano()),
 		Username:  username,
-		Password:  string(hashedPassword),
-		CreatedAt: now,
+		Password:  string(hash),
+		CreatedAt: time.Now(),
 	}
-
-	// Вставляем пользователя в базу данных
-	db := database.GetDB()
-	_, err = db.Exec(
-		"INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+	_, err = database.GetDB().Exec(
+		`INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)`,
 		user.ID, user.Username, user.Password, user.CreatedAt,
 	)
 	if err != nil {
-		logger.Error("failed to insert user into database: %v", err)
-		return nil, fmt.Errorf("failed to insert user into database: %w", err)
+		return nil, fmt.Errorf("insert user: %w", err)
 	}
-
-	logger.Info("created user: %s", user.Username)
 	return user, nil
 }
 
-// UsernameExists проверяет, существует ли пользователь с таким именем
 func UsernameExists(username string) (bool, error) {
-	db := database.GetDB()
 	var exists bool
-
-	err := db.QueryRow(
-		"SELECT EXISTS(SELECT 1 FROM users WHERE username = ? LIMIT 1)",
-		username,
+	err := database.GetDB().QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM users WHERE username = ? LIMIT 1)`, username,
 	).Scan(&exists)
-
 	if err != nil {
-		logger.Error("Failed to check username existence: %v", err)
-		return false, fmt.Errorf("failed to check username existence: %w", err)
+		return false, fmt.Errorf("check username: %w", err)
 	}
-
 	return exists, nil
 }
 
-// GetUserByUsername получает пользователя по имени пользователя
-func GetUserByUsername(username string) (*User, bool) {
-	db := database.GetDB()
-	var user User
-
-	err := db.QueryRow(
-		"SELECT id, username, password_hash, created_at FROM users WHERE username = ?",
-		username,
-	).Scan(&user.ID, &user.Username, &user.Password, &user.CreatedAt)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, false
-		}
-		logger.Error("Database error in GetUserByUsername: %v", err)
-		return nil, false
+// GetUserByUsername возвращает пользователя. Ошибка БД отделена от «не найдено».
+func GetUserByUsername(username string) (*User, bool, error) {
+	var u User
+	err := database.GetDB().QueryRow(
+		`SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username,
+	).Scan(&u.ID, &u.Username, &u.Password, &u.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
 	}
-
-	return &user, true
+	if err != nil {
+		return nil, false, fmt.Errorf("get user: %w", err)
+	}
+	return &u, true, nil
 }
 
-// ValidateUser проверяет правильность пароля пользователя
-func ValidateUser(username, password string) (*User, bool) {
-	user, found := GetUserByUsername(username)
-	if !found {
-		return nil, false
+func ValidateUser(username, password string) (*User, bool, error) {
+	u, found, err := GetUserByUsername(username)
+	if err != nil || !found {
+		return nil, false, err
 	}
-
-	// Сравниваем хэшированный пароль с введенным
-	err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(password))
-	if err != nil {
-		return nil, false
+	if err := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password)); err != nil {
+		return nil, false, nil
 	}
-
-	return user, true
+	return u, true, nil
 }
 
-// Session представляет сессию пользователя
+// Session представляет сессию пользователя.
 type Session struct {
 	ID        string    `json:"id"`
 	UserID    string    `json:"user_id"`
@@ -127,105 +105,67 @@ type Session struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// NewSession создает новую сессию
 func NewSession(userID string) (*Session, error) {
-	id := fmt.Sprintf("session-%d", time.Now().UnixNano())
 	now := time.Now()
-	expiresAt := now.Add(24 * time.Hour) // Срок действия сессии 24 часа
-
-	session := &Session{
-		ID:        id,
+	s := &Session{
+		ID:        fmt.Sprintf("session-%d", now.UnixNano()),
 		UserID:    userID,
 		CreatedAt: now,
-		ExpiresAt: expiresAt,
+		ExpiresAt: now.Add(24 * time.Hour),
 	}
-
-	// Вставка в базу данных
-	db := database.GetDB()
-	_, err := db.Exec(
-		"INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-		session.ID, session.UserID, session.CreatedAt, session.ExpiresAt,
+	hash := sha256.Sum256([]byte(s.ID))
+	_, err := database.GetDB().Exec(
+		`INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		s.ID, s.UserID, hex.EncodeToString(hash[:]), s.CreatedAt, s.ExpiresAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert session: %w", err)
+		return nil, fmt.Errorf("insert session: %w", err)
 	}
-
-	return session, nil
+	return s, nil
 }
 
-// GetSessionByID получает сессию по ID
-func GetSessionByID(sessionID string) (*Session, bool) {
-	db := database.GetDB()
-	var session Session
-
-	err := db.QueryRow(
-		"SELECT id, user_id, created_at, expires_at FROM sessions WHERE id = ?",
-		sessionID,
-	).Scan(&session.ID, &session.UserID, &session.CreatedAt, &session.ExpiresAt)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, false
-		}
-		logger.Error("Database error in GetSessionByID: %v", err)
-		return nil, false
+func GetSessionByID(id string) (*Session, bool, error) {
+	var s Session
+	err := database.GetDB().QueryRow(
+		`SELECT id, user_id, created_at, expires_at FROM sessions WHERE id = ?`, id,
+	).Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.ExpiresAt)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
 	}
-
-	return &session, true
+	if err != nil {
+		return nil, false, fmt.Errorf("get session: %w", err)
+	}
+	return &s, true, nil
 }
 
-// DeleteSession удаляет сессию
-func DeleteSession(sessionID string) error {
-	db := database.GetDB()
-	_, err := db.Exec(
-		"DELETE FROM sessions WHERE id = ?",
-		sessionID,
-	)
+func DeleteSession(id string) error {
+	_, err := database.GetDB().Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	if err != nil {
-		logger.Error("Failed to delete session: %v", err)
-		return fmt.Errorf("failed to delete session: %w", err)
+		return fmt.Errorf("delete session: %w", err)
 	}
-
 	return nil
 }
 
-// ListSessions возвращает все сессии для конкретного пользователя
 func ListSessions(userID string) ([]*Session, error) {
-	db := database.GetDB()
-	rows, err := db.Query(
-		"SELECT id, user_id, created_at, expires_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC",
+	rows, err := database.GetDB().Query(
+		`SELECT id, user_id, created_at, expires_at FROM sessions WHERE user_id = ? ORDER BY created_at DESC`,
 		userID,
 	)
 	if err != nil {
-		logger.Error("Database error in ListSessions: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	defer rows.Close()
 
 	var sessions []*Session
 	for rows.Next() {
-		var session Session
-		if err := rows.Scan(&session.ID, &session.UserID, &session.CreatedAt, &session.ExpiresAt); err != nil {
-			logger.Error("Error scanning session row: %v", err)
-			continue
+		var s Session
+		if err := rows.Scan(&s.ID, &s.UserID, &s.CreatedAt, &s.ExpiresAt); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
 		}
-		sessions = append(sessions, &session)
+		sessions = append(sessions, &s)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sessions: %w", err)
+	}
 	return sessions, nil
-}
-
-// UpdateSessionExpiration обновляет срок действия сессии
-func UpdateSessionExpiration(sessionID string, expiresAt time.Time) error {
-	db := database.GetDB()
-	_, err := db.Exec(
-		"UPDATE sessions SET expires_at = ? WHERE id = ?",
-		expiresAt, sessionID,
-	)
-	if err != nil {
-		logger.Error("Failed to update session expiration: %v", err)
-		return fmt.Errorf("failed to update session expiration: %w", err)
-	}
-
-	return nil
 }

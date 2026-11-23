@@ -5,15 +5,21 @@ services:
       dockerfile: Dockerfile.orchestrator
     env_file: .env
     environment:
-      - JWT_SECRET=${JWT_SECRET}
-      - LOG_LEVEL=${LOG_LEVEL}
+      # Внутренний порт фиксирован. PORT снаружи меняет только маппинг.
+      - PORT=8080
     ports:
-      - "${PORT}:8080"
+      - "${PORT:-8080}:8080"
     volumes:
       - ./data:/app/data
     networks:
       - calc-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   agent:
     build:
@@ -22,13 +28,12 @@ services:
     env_file: .env
     environment:
       - ORCHESTRATOR_HOST=orchestrator
-      - LOG_LEVEL=${LOG_LEVEL}
+      - ORCHESTRATOR_PORT=8080
     depends_on:
-      - orchestrator
+      orchestrator:
+        condition: service_healthy
     networks:
       - calc-net
-    deploy:
-      replicas: ${COMPUTING_POWER}
     restart: unless-stopped
 
 networks:

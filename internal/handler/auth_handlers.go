@@ -1,18 +1,26 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
+	"strings"
+	"time"
+	"unicode/utf8"
 
 	"calc-service/internal/store"
 	"calc-service/pkg/logger"
-	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
+)
+
+const (
+	minUsernameLen = 3
+	maxUsernameLen = 64
+	minPasswordLen = 8
+	maxPasswordLen = 72 // bcrypt игнорирует байты после 72-го
 )
 
 type RegisterRequest struct {
@@ -29,108 +37,137 @@ type AuthResponse struct {
 	Token string `json:"token"`
 }
 
+var agentTokenTTL = 24 * time.Hour
+
+// SetAgentTokenTTL задаёт срок жизни токена агента.
+func SetAgentTokenTTL(ttl time.Duration) { agentTokenTTL = ttl }
+
 func HandleRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
 	var req RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Error("Invalid request data: %v", err)
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := validateCredentials(req.Username, req.Password); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	logger.Info("Attempting to register user: %s", req.Username)
 	user, err := store.CreateUser(req.Username, req.Password)
 	if err != nil {
-		logger.Error("Failed to create user: %v", err)
-		http.Error(w, err.Error(), http.StatusConflict)
+		if errors.Is(err, store.ErrUsernameExists) {
+			writeError(w, http.StatusConflict, "username already exists")
+			return
+		}
+		logAndFail(w, "register "+req.Username, err)
 		return
 	}
-
-	tokenString, err := generateToken(user.ID)
+	token, err := generateToken(user.ID)
 	if err != nil {
-		logger.Error("Failed to generate token: %v", err)
-		http.Error(w, "Token generation failed", http.StatusInternalServerError)
+		logAndFail(w, "token generation", err)
 		return
 	}
-
-	logger.Info("User registered successfully: %s", req.Username)
-	writeJSON(w, AuthResponse{Token: tokenString})
+	writeJSON(w, http.StatusCreated, AuthResponse{Token: token})
 }
 
 func HandleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
 	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Error("Invalid login request data: %v", err)
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
-	logger.Info("Attempting to log in user: %s", req.Username)
-	user, found := store.GetUserByUsername(req.Username)
-	if !found {
-		logger.Error("Invalid login attempt: user not found %s", req.Username)
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		logger.Error("Invalid password for user: %s", req.Username)
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	tokenString, err := generateToken(user.ID)
+	user, found, err := store.GetUserByUsername(req.Username)
 	if err != nil {
-		logger.Error("Failed to generate token for user %s: %v", req.Username, err)
-		http.Error(w, "Token generation failed", http.StatusInternalServerError)
+		logAndFail(w, "login lookup", err)
 		return
 	}
+	if !found || comparePassword(user.Password, req.Password) != nil {
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	token, err := generateToken(user.ID)
+	if err != nil {
+		logAndFail(w, "token generation", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, AuthResponse{Token: token})
+}
 
-	logger.Info("User logged in successfully: %s", req.Username)
-	writeJSON(w, AuthResponse{Token: tokenString})
+// validateCredentials проверяет логин и пароль до обращения к базе.
+func validateCredentials(username, password string) error {
+	name := strings.TrimSpace(username)
+	if utf8.RuneCountInString(name) < minUsernameLen || utf8.RuneCountInString(name) > maxUsernameLen {
+		return errors.New("username must be 3 to 64 characters long")
+	}
+	for _, ch := range name {
+		ok := ch == '_' || ch == '-' || ch == '.' ||
+			(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+		if !ok {
+			return errors.New("username may contain only letters, digits, dot, dash and underscore")
+		}
+	}
+	if len(password) < minPasswordLen {
+		return errors.New("password must be at least 8 characters long")
+	}
+	if len(password) > maxPasswordLen {
+		return errors.New("password must be at most 72 bytes long")
+	}
+	return nil
+}
+
+func comparePassword(hash, password string) error {
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 }
 
 func generateToken(userID string) (string, error) {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		return "", ErrMissingJWTSecret
+	if len(jwtSecret) == 0 {
+		return "", jwt.ErrInvalidKey
 	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+	now := time.Now()
+	claims := jwt.MapClaims{
 		"sub": userID,
-		"exp": time.Now().Add(24 * time.Hour).Unix(),
-	})
-	return token.SignedString([]byte(secret))
-}
-
-var ErrMissingJWTSecret = jwt.ErrInvalidKey
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
-}
-
-// GenerateAgentToken создает JWT токен для агента
-func GenerateAgentToken() (string, error) {
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		err := errors.New("JWT_SECRET is not set")
-		// Логируем ошибку для диагностики
-		fmt.Println(err)
-		return "", err
+		"iat": now.Unix(),
+		"exp": now.Add(24 * time.Hour).Unix(),
 	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret)
+}
 
+// GenerateAgentToken создаёт токен для агента.
+func GenerateAgentToken() (string, error) {
+	if len(jwtSecret) == 0 {
+		return "", jwt.ErrInvalidKey
+	}
+	now := time.Now()
 	claims := jwt.MapClaims{
 		"role": "agent",
-		"exp":  time.Now().Add(24 * time.Hour).Unix(),
+		"iat":  now.Unix(),
+		"exp":  now.Add(agentTokenTTL).Unix(),
 	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret)
+}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signedToken, err := token.SignedString([]byte(jwtSecret))
-	if err != nil {
-		// Логируем ошибку подписи токена
-		fmt.Printf("Error signing token: %v\n", err)
-		return "", err
+// writeJSON кодирует ответ в буфер и ставит статус только после успешного кодирования.
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(v); err != nil {
+		logger.Error("encode response: %v", err)
+		// Кодирование упало: отдаём готовый JSON, чтобы клиент не получил text/plain.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("{\"error\":\"internal server error\"}\n"))
+		return
 	}
-
-	return signedToken, nil
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		logger.Error("write response: %v", err)
+	}
 }

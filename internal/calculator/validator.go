@@ -3,68 +3,55 @@ package calculator
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"unicode"
 )
 
-// Helper function to check if a string is an operator
 func isOperator(s string) bool {
 	return s == "+" || s == "-" || s == "*" || s == "/"
 }
 
-// ValidateExpression checks if the expression is valid for processing
+// ValidateExpression проверяет символы, скобки и операнды выражения.
 func ValidateExpression(expr string) error {
-	if len(expr) == 0 {
+	if expr == "" {
 		return fmt.Errorf("expression cannot be empty")
 	}
 
-	// Check for invalid characters
-	for i, ch := range expr {
-		if !unicode.IsDigit(ch) && ch != '+' && ch != '-' && ch != '*' && ch != '/' && ch != '.' && ch != '(' && ch != ')' {
-			return fmt.Errorf("invalid character at position %d: %c", i, ch)
-		}
-	}
-
-	// Check for consecutive operators
-	for i := 0; i < len(expr)-1; i++ {
-		if isOperator(string(expr[i])) && isOperator(string(expr[i+1])) {
-			return fmt.Errorf("consecutive operators at position %d", i)
-		}
-	}
-
-	// Check for mismatched parentheses
-	openCount := 0
 	for _, ch := range expr {
-		if ch == '(' {
-			openCount++
-		} else if ch == ')' {
-			openCount--
-			if openCount < 0 {
+		if !unicode.IsDigit(ch) && !isOperator(string(ch)) && ch != '.' && ch != '(' && ch != ')' {
+			return fmt.Errorf("invalid character %q", ch)
+		}
+	}
+
+	depth := 0
+	for _, ch := range expr {
+		switch ch {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
 				return fmt.Errorf("mismatched parentheses")
 			}
 		}
 	}
-	if openCount != 0 {
+	if depth != 0 {
 		return fmt.Errorf("mismatched parentheses")
 	}
 
-	// Check for valid operands
-	tokens := strings.FieldsFunc(expr, func(r rune) bool {
-		return r == '+' || r == '-' || r == '*' || r == '/' || r == '(' || r == ')'
-	})
-
-	for _, token := range tokens {
-		token = strings.TrimSpace(token)
-		if token == "" {
+	// Операнд должен быть числом. Пустые части появляются только у унарных знаков.
+	runes := []rune(expr)
+	for i := 0; i < len(runes); i++ {
+		if !unicode.IsDigit(runes[i]) && runes[i] != '.' {
 			continue
 		}
-
-		// Try to parse as float
-		_, err := strconv.ParseFloat(token, 64)
-		if err != nil {
-			return fmt.Errorf("invalid operand: %s", token)
+		start := i
+		for i < len(runes) && (unicode.IsDigit(runes[i]) || runes[i] == '.') {
+			i++
 		}
+		if _, err := strconv.ParseFloat(string(runes[start:i]), 64); err != nil {
+			return fmt.Errorf("invalid operand %q", string(runes[start:i]))
+		}
+		i--
 	}
-
 	return nil
 }
