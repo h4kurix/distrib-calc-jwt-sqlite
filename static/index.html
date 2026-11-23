@@ -3,252 +3,401 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
     <title>Калькулятор</title>
+    <link rel="icon" href="data:,">
     <style>
-        body {
-            font-family: sans-serif;
-            max-width: 480px;
-            margin: 2em auto;
-            padding: 0 1em;
+        :root {
+            --bg: #f9fafb;
+            --card: #ffffff;
+            --fg: #1f2937;
+            --muted: #6b7280;
+            --line: #d1d5db;
+            --accent: #2563eb;
+            --error: #b91c1c;
+            --ok: #047857;
         }
 
-        input,
-        button {
-            padding: .5em;
-            margin: .2em 0;
-            width: 100%;
+        * {
             box-sizing: border-box;
         }
 
-        button {
-            cursor: pointer;
+        body {
+            margin: 0;
+            min-height: 100vh;
+            padding: 2rem 1rem;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            background: var(--bg);
+            color: var(--fg);
+            font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+
+        .shell {
+            width: min(100%, 28rem);
+        }
+
+        .card {
+            padding: 1.5rem;
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgb(17 24 39 / 6%);
         }
 
         .hidden {
             display: none;
         }
 
-        #result {
-            margin-top: 1em;
-            font-weight: bold;
-            min-height: 1.4em;
-        }
-
-        #auth-msg {
-            color: red;
-            font-weight: bold;
+        h1 {
+            margin: 0 0 .25rem;
+            font-size: 1.4rem;
         }
 
         .hint {
-            color: #666;
-            font-size: .85em;
+            margin: 0 0 1.25rem;
+            color: var(--muted);
+            font-size: .875rem;
+        }
+
+        label {
+            display: block;
+            margin-bottom: .75rem;
+            font-size: .875rem;
+            font-weight: 600;
+        }
+
+        input {
+            display: block;
+            width: 100%;
+            margin-top: .25rem;
+            padding: .6rem .7rem;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            font: inherit;
+        }
+
+        input:focus-visible,
+        button:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        .row {
+            display: flex;
+            gap: .5rem;
+        }
+
+        button {
+            flex: 1;
+            padding: .6rem .8rem;
+            border: 1px solid var(--accent);
+            border-radius: 8px;
+            background: var(--accent);
+            color: #fff;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        button.secondary {
+            background: transparent;
+            color: var(--accent);
+        }
+
+        button.link {
+            flex: none;
+            padding: .25rem .4rem;
+            border: 0;
+            background: transparent;
+            color: var(--muted);
+            font-weight: 500;
+        }
+
+        button:disabled {
+            opacity: .6;
+            cursor: not-allowed;
+        }
+
+        .head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.25rem;
+        }
+
+        .status {
+            min-height: 1.5rem;
+            margin: 1rem 0 0;
+            font-weight: 600;
+        }
+
+        .status[data-kind="error"] {
+            color: var(--error);
+        }
+
+        .status[data-kind="ok"] {
+            color: var(--ok);
         }
     </style>
 </head>
 
 <body>
-    <h2>Вход</h2>
-    <div id="auth">
-        <input id="username" placeholder="Логин" autocomplete="username" />
-        <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" />
-        <button id="btn-register">Регистрация</button>
-        <button id="btn-login">Войти</button>
-        <div class="hint">Логин 3–64 символа, пароль от 8 символов.</div>
-        <div id="auth-msg"></div>
-    </div>
+    <main class="shell">
+        <section id="auth-view" class="card" aria-labelledby="auth-title">
+            <h1 id="auth-title">Калькулятор</h1>
+            <p class="hint">Логин от 3 до 64 символов, пароль от 8 символов.</p>
 
-    <div id="calc" class="hidden">
-        <h2>Вычисление</h2>
-        <input id="expr" placeholder="например, 2+2*2" />
-        <button id="btn-calc">Вычислить</button>
-        <button id="btn-logout">Выйти</button>
-        <div id="result"></div>
-    </div>
+            <form id="auth-form">
+                <label for="username">Логин
+                    <input id="username" name="username" type="text" autocomplete="username"
+                        minlength="3" maxlength="64" required>
+                </label>
+                <label for="password">Пароль
+                    <input id="password" name="password" type="password" autocomplete="current-password"
+                        minlength="8" maxlength="72" required>
+                </label>
+                <div class="row">
+                    <button type="submit" name="action" value="register" class="secondary">Регистрация</button>
+                    <button type="submit" name="action" value="login">Войти</button>
+                </div>
+            </form>
+
+            <p id="auth-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <section id="calc-view" class="card hidden" aria-labelledby="calc-title">
+            <div class="head">
+                <h1 id="calc-title">Вычисление</h1>
+                <button id="btn-logout" type="button" class="link">Выйти</button>
+            </div>
+
+            <form id="calc-form">
+                <label for="expression">Выражение
+                    <input id="expression" name="expression" type="text" placeholder="например, 2+2*2"
+                        autocomplete="off" spellcheck="false" required>
+                </label>
+                <button id="btn-calculate" type="submit">Вычислить</button>
+            </form>
+
+            <p id="calc-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+    </main>
 
     <script>
-        // Относительный путь: страница работает и за прокси, и с другого хоста.
-        const api = '/api/v1';
-        const pollIntervalMs = 500;
-        const pollTimeoutMs = 60000; // после минуты ожидания показываем ошибку
+        (() => {
+            'use strict';
 
-        let token = '';
+            // Относительный путь: страница работает и за прокси, и на другом хосте.
+            const api = '/api/v1';
+            const pollIntervalMs = 500;
+            const pollTimeoutMs = 60000;
+            const tokenCookie = 'calc_token';
 
-        function setText(el, text, kind) {
-            el.textContent = text;
-            el.style.color = kind === 'error' ? 'red' : kind === 'ok' ? 'green' : '#333';
-        }
+            const el = (id) => document.getElementById(id);
+            const views = { auth: el('auth-view'), calc: el('calc-view') };
+            const authForm = el('auth-form');
+            const calcForm = el('calc-form');
+            const authStatus = el('auth-status');
+            const calcStatus = el('calc-status');
 
-        function setCookie(name, value, days = 1) {
-            const expires = new Date(Date.now() + days * 864e5).toUTCString();
-            document.cookie = name + '=' + encodeURIComponent(value) +
-                '; expires=' + expires + '; path=/; SameSite=Lax';
-        }
+            let token = '';
+            let pollTimer = null;
+            let generation = 0;
 
-        function getCookie(name) {
-            return document.cookie.split('; ').reduce((acc, item) => {
-                const parts = item.split('=');
-                return parts[0] === name ? decodeURIComponent(parts[1]) : acc;
-            }, '');
-        }
-
-        function deleteCookie(name) {
-            document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; SameSite=Lax';
-        }
-
-        // Сервер всегда отвечает JSON, но клиент не должен падать, если это не так.
-        async function readJSON(res) {
-            const text = await res.text();
-            if (!text) return {};
-            try {
-                return JSON.parse(text);
-            } catch (e) {
-                return { error: text };
-            }
-        }
-
-        function showAuth(message, isError) {
-            document.getElementById('calc').classList.add('hidden');
-            document.getElementById('auth').classList.remove('hidden');
-            if (message !== undefined) {
-                setText(document.getElementById('auth-msg'), message, isError ? 'error' : 'ok');
-            }
-        }
-
-        function showCalc() {
-            document.getElementById('auth').classList.add('hidden');
-            document.getElementById('calc').classList.remove('hidden');
-            setText(document.getElementById('result'), '');
-        }
-
-        function logout(message, isError) {
-            token = '';
-            deleteCookie('token');
-            document.getElementById('password').value = '';
-            showAuth(message, isError);
-        }
-
-        async function auth(path) {
-            const user = document.getElementById('username').value.trim();
-            const pass = document.getElementById('password').value;
-            if (!user || !pass) {
-                setText(document.getElementById('auth-msg'), 'Введите логин и пароль', 'error');
-                return;
-            }
-            let data;
-            try {
-                const res = await fetch(api + '/' + path, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: user, password: pass })
-                });
-                data = await readJSON(res);
-                if (!res.ok || !data.token) {
-                    setText(document.getElementById('auth-msg'), data.error || 'Не удалось войти', 'error');
-                    return;
+            function setStatus(node, text, kind) {
+                node.textContent = text;
+                if (kind) {
+                    node.dataset.kind = kind;
+                } else {
+                    delete node.dataset.kind;
                 }
-            } catch (e) {
-                setText(document.getElementById('auth-msg'), 'Сеть недоступна: ' + e.message, 'error');
-                return;
-            }
-            token = data.token;
-            setCookie('token', token);
-            setText(document.getElementById('auth-msg'), '');
-            showCalc();
-        }
-
-        document.getElementById('btn-register').onclick = () => auth('register');
-        document.getElementById('btn-login').onclick = () => auth('login');
-
-        document.getElementById('btn-calc').onclick = async () => {
-            const expression = document.getElementById('expr').value.trim();
-            const out = document.getElementById('result');
-            if (!expression) {
-                setText(out, 'Введите выражение', 'error');
-                return;
             }
 
-            setText(out, 'Считаю…');
-            let id;
-            try {
-                const res = await fetch(api + '/calculate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': 'Bearer ' + token
-                    },
-                    body: JSON.stringify({ expression })
-                });
-                const data = await readJSON(res);
-                if (res.status === 401) {
-                    logout('Сессия истекла, войдите снова', true);
-                    return;
-                }
-                if (!res.ok) {
-                    setText(out, data.error || 'Ошибка запроса', 'error');
-                    return;
-                }
-                id = data.id;
-                if (!id) {
-                    setText(out, 'Сервер не вернул идентификатор', 'error');
-                    return;
-                }
-            } catch (e) {
-                setText(out, 'Сеть недоступна: ' + e.message, 'error');
-                return;
+            function show(name) {
+                views.auth.classList.toggle('hidden', name !== 'auth');
+                views.calc.classList.toggle('hidden', name !== 'calc');
             }
 
-            const started = Date.now();
-            const poll = setInterval(async () => {
-                if (Date.now() - started > pollTimeoutMs) {
-                    clearInterval(poll);
-                    setText(out, 'Истекло время ожидания: агенты не ответили', 'error');
-                    return;
+            function setBusy(form, busy) {
+                for (const field of form.elements) {
+                    field.disabled = busy;
                 }
+            }
+
+            function saveToken(value) {
+                token = value;
+                document.cookie = `${tokenCookie}=${encodeURIComponent(value)}; path=/; SameSite=Lax`;
+            }
+
+            function clearToken() {
+                token = '';
+                generation++;
+                stopPolling();
+                document.cookie = `${tokenCookie}=; max-age=0; path=/; SameSite=Lax`;
+            }
+
+            function readToken() {
+                const found = document.cookie
+                    .split('; ')
+                    .map((part) => part.split('='))
+                    .find(([key]) => key === tokenCookie);
+                return found ? decodeURIComponent(found.slice(1).join('=')) : '';
+            }
+
+            // Сервер отвечает JSON, но клиент не должен падать на текстовом теле.
+            async function request(path, options = {}) {
+                const headers = { ...options.headers };
+                if (options.body !== undefined) {
+                    headers['Content-Type'] = 'application/json';
+                }
+                if (token) {
+                    headers.Authorization = `Bearer ${token}`;
+                }
+                const res = await fetch(api + path, { ...options, headers });
+                const raw = await res.text();
+                let data = {};
+                if (raw) {
+                    try {
+                        data = JSON.parse(raw);
+                    } catch {
+                        data = { error: raw };
+                    }
+                }
+                return { res, data };
+            }
+
+            function stopPolling() {
+                if (pollTimer !== null) {
+                    clearTimeout(pollTimer);
+                    pollTimer = null;
+                }
+            }
+
+            function logout(message) {
+                clearToken();
+                el('password').value = '';
+                setStatus(calcStatus, '');
+                setStatus(authStatus, message || '', message ? 'ok' : undefined);
+                show('auth');
+            }
+
+            authForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const action = event.submitter?.value === 'register' ? 'register' : 'login';
+                const username = el('username').value.trim();
+                const password = el('password').value;
+
+                setStatus(authStatus, '');
+                setBusy(authForm, true);
                 try {
-                    const res = await fetch(api + '/expressions/' + encodeURIComponent(id), {
-                        headers: { 'Authorization': 'Bearer ' + token }
+                    const { res, data } = await request('/' + action, {
+                        method: 'POST',
+                        body: JSON.stringify({ username, password })
                     });
-                    const data = await readJSON(res);
+                    if (!res.ok || !data.token) {
+                        setStatus(authStatus, data.error || 'Не удалось войти', 'error');
+                        return;
+                    }
+                    saveToken(data.token);
+                    el('password').value = '';
+                    setStatus(authStatus, '');
+                    show('calc');
+                } catch (error) {
+                    setStatus(authStatus, 'Сеть недоступна: ' + error.message, 'error');
+                } finally {
+                    setBusy(authForm, false);
+                }
+            });
+
+            calcForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const expression = el('expression').value.trim();
+                if (!expression) {
+                    setStatus(calcStatus, 'Введите выражение', 'error');
+                    return;
+                }
+
+                stopPolling();
+                const current = ++generation;
+                const deadline = Date.now() + pollTimeoutMs;
+                setBusy(calcForm, true);
+                setStatus(calcStatus, 'Считаю…');
+
+                const poll = async () => {
+                    if (current !== generation) return;
+                    if (Date.now() > deadline) {
+                        setStatus(calcStatus, 'Истекло время ожидания: агенты не ответили', 'error');
+                        return;
+                    }
+                    try {
+                        const { res, data } = await request('/expressions/' + encodeURIComponent(id));
+                        if (current !== generation) return;
+                        if (res.status === 401) {
+                            logout('Сессия истекла, войдите снова');
+                            return;
+                        }
+                        if (!res.ok) {
+                            setStatus(calcStatus, data.error || 'Ошибка запроса', 'error');
+                            return;
+                        }
+                        const expr = data.expression;
+                        if (!expr) {
+                            setStatus(calcStatus, 'Пустой ответ сервера', 'error');
+                            return;
+                        }
+                        if (expr.status === 'completed') {
+                            setStatus(calcStatus, 'Результат: ' + expr.result, 'ok');
+                            return;
+                        }
+                        if (expr.status === 'error') {
+                            setStatus(calcStatus, expr.error || 'Не удалось вычислить', 'error');
+                            return;
+                        }
+                    } catch (error) {
+                        setStatus(calcStatus, 'Сеть недоступна: ' + error.message, 'error');
+                        return;
+                    }
+                    pollTimer = setTimeout(poll, pollIntervalMs);
+                };
+
+                let id;
+                try {
+                    const { res, data } = await request('/calculate', {
+                        method: 'POST',
+                        body: JSON.stringify({ expression })
+                    });
                     if (res.status === 401) {
-                        clearInterval(poll);
-                        logout('Сессия истекла, войдите снова', true);
+                        logout('Сессия истекла, войдите снова');
                         return;
                     }
                     if (!res.ok) {
-                        clearInterval(poll);
-                        setText(out, data.error || 'Ошибка запроса', 'error');
+                        setStatus(calcStatus, data.error || 'Ошибка запроса', 'error');
                         return;
                     }
-                    const expr = data.expression;
-                    if (!expr) {
-                        clearInterval(poll);
-                        setText(out, 'Пустой ответ сервера', 'error');
+                    if (!data.id) {
+                        setStatus(calcStatus, 'Сервер не вернул идентификатор', 'error');
                         return;
                     }
-                    if (expr.status === 'completed') {
-                        clearInterval(poll);
-                        setText(out, 'Результат: ' + expr.result, 'ok');
-                    } else if (expr.status === 'error') {
-                        clearInterval(poll);
-                        setText(out, expr.error || 'Не удалось вычислить', 'error');
-                    }
-                } catch (e) {
-                    clearInterval(poll);
-                    setText(out, 'Сеть недоступна: ' + e.message, 'error');
+                    id = data.id;
+                    await poll();
+                } catch (error) {
+                    setStatus(calcStatus, 'Сеть недоступна: ' + error.message, 'error');
+                } finally {
+                    setBusy(calcForm, false);
                 }
-            }, pollIntervalMs);
-        };
+            });
 
-        document.getElementById('btn-logout').onclick = () => logout('Вы вышли', false);
+            el('btn-logout').addEventListener('click', () => logout('Вы вышли'));
 
-        window.onload = () => {
-            const saved = getCookie('token');
+            const saved = readToken();
             if (saved) {
-                token = saved;
-                showCalc();
+                saveToken(saved);
+                show('calc');
             }
-        };
+        })();
     </script>
 </body>
 
