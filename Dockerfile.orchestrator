@@ -15,7 +15,6 @@ RUN apk add --no-cache sqlite-libs
 WORKDIR /app
 COPY --from=builder /orchestrator ./orchestrator
 COPY static ./static
-COPY .env ./
 RUN mkdir -p data
 EXPOSE 8080
 ENTRYPOINT ["./orchestrator"]
