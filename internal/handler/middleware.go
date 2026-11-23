@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -14,30 +13,53 @@ type contextKey string
 
 const userIDKey contextKey = "userID"
 
+var jwtSecret []byte
+
+// SetJWTSecret задаёт ключ подписи. Вызывается при старте сервиса.
+func SetJWTSecret(secret string) { jwtSecret = []byte(secret) }
+
+func parseToken(r *http.Request) (*jwt.Token, error) {
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		return nil, fmt.Errorf("missing bearer token")
+	}
+	tokenString := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+	if tokenString == "" {
+		return nil, fmt.Errorf("empty bearer token")
+	}
+	if len(jwtSecret) == 0 {
+		return nil, fmt.Errorf("server auth is not configured")
+	}
+	return jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return jwtSecret, nil
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
+}
+
+// AuthMiddleware пропускает только пользовательские токены с непустым sub.
 func AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			http.Error(w, "Authorization required", http.StatusUnauthorized)
-			return
-		}
-
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return []byte(os.Getenv("JWT_SECRET")), nil
-		})
+		token, err := parseToken(r)
 		if err != nil || !token.Valid {
 			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
-
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
 			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
 			return
 		}
-
-		userID, _ := claims["sub"].(string)
+		userID, ok := claims["sub"].(string)
+		if !ok || userID == "" {
+			http.Error(w, "Invalid token subject", http.StatusUnauthorized)
+			return
+		}
+		if role, _ := claims["role"].(string); role == "agent" {
+			http.Error(w, "Agent token is not allowed here", http.StatusUnauthorized)
+			return
+		}
 		ctx := context.WithValue(r.Context(), userIDKey, userID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -48,41 +70,23 @@ func getUserIDFromContext(ctx context.Context) string {
 	return id
 }
 
-// AgentAuthMiddleware проверяет токен агента
+// AgentAuthMiddleware пропускает только токены агента.
 func AgentAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Извлекаем токен из заголовка Authorization
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" || len(authHeader) < 8 || authHeader[:7] != "Bearer " {
-			http.Error(w, "Unauthorized: Invalid token format", http.StatusUnauthorized)
+		token, err := parseToken(r)
+		if err != nil || !token.Valid {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-
-		tokenString := authHeader[7:]
-
-		// Парсим и проверяем токен
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			// Проверяем метод подписи
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(os.Getenv("JWT_SECRET")), nil
-		})
-
-		if err != nil {
-			http.Error(w, "Unauthorized: "+err.Error(), http.StatusUnauthorized)
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-
-		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-			// Проверяем, что это токен агента
-			if role, ok := claims["role"].(string); ok && role == "agent" {
-				// Авторизация прошла успешно, продолжаем
-				next.ServeHTTP(w, r)
-				return
-			}
+		if role, _ := claims["role"].(string); role != "agent" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
-
-		http.Error(w, "Unauthorized: Invalid agent token", http.StatusUnauthorized)
+		next.ServeHTTP(w, r)
 	})
 }

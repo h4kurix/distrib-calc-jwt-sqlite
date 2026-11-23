@@ -6,7 +6,6 @@ import (
 	"unicode"
 )
 
-// Лексический анализ: токенизация
 type token struct {
 	value string
 	type_ tokenType
@@ -21,43 +20,54 @@ const (
 	rightParen
 )
 
+// tokenize выполняет лексический разбор. Работает с рунами, а не с байтами.
+// Унарный минус превращается в "0 - ...", что сохраняет приоритет операций.
 func tokenize(expression string) ([]token, error) {
+	runes := []rune(expression)
 	var tokens []token
 	var current strings.Builder
-	parenCount := 0
 
-	for i, ch := range expression {
+	flush := func() {
+		if current.Len() > 0 {
+			tokens = append(tokens, token{current.String(), number})
+			current.Reset()
+		}
+	}
+	unaryContext := func() bool {
+		if len(tokens) == 0 {
+			return true
+		}
+		prev := tokens[len(tokens)-1]
+		return prev.type_ == operator || prev.type_ == leftParen
+	}
+
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
 		switch {
 		case unicode.IsDigit(ch) || ch == '.':
 			current.WriteRune(ch)
-			if i == len(expression)-1 || !(unicode.IsDigit(rune(expression[i+1])) || expression[i+1] == '.') {
-				tokens = append(tokens, token{current.String(), number})
-				current.Reset()
-			}
 		case ch == '+' || ch == '-' || ch == '*' || ch == '/':
-			if current.Len() > 0 {
-				tokens = append(tokens, token{current.String(), number})
-				current.Reset()
+			flush()
+			if unaryContext() {
+				if ch == '*' || ch == '/' {
+					return nil, fmt.Errorf("operator %q has no left operand", ch)
+				}
+				if ch == '-' {
+					tokens = append(tokens, token{"0", number})
+				}
 			}
 			tokens = append(tokens, token{string(ch), operator})
 		case ch == '(':
+			flush()
 			tokens = append(tokens, token{"(", leftParen})
-			parenCount++
 		case ch == ')':
-			if current.Len() > 0 {
-				tokens = append(tokens, token{current.String(), number})
-				current.Reset()
-			}
+			flush()
 			tokens = append(tokens, token{")", rightParen})
-			parenCount--
-			if parenCount < 0 {
-				return nil, fmt.Errorf("unbalanced parentheses")
-			}
+		default:
+			return nil, fmt.Errorf("unexpected character %q", ch)
 		}
 	}
-	if parenCount != 0 {
-		return nil, fmt.Errorf("unbalanced parentheses")
-	}
+	flush()
 	return tokens, nil
 }
 
@@ -76,6 +86,19 @@ func buildExpressionTree(tokens []token) (*Node, error) {
 	var outputQueue []*Node
 	var operatorStack []string
 
+	makeNode := func(op string) error {
+		if len(outputQueue) < 2 {
+			return fmt.Errorf("invalid expression")
+		}
+		right := outputQueue[len(outputQueue)-1]
+		left := outputQueue[len(outputQueue)-2]
+		outputQueue = outputQueue[:len(outputQueue)-2]
+		outputQueue = append(outputQueue, &Node{
+			Value: op, Left: left, Right: right, Priority: precedence(op),
+		})
+		return nil
+	}
+
 	for _, t := range tokens {
 		switch t.type_ {
 		case number:
@@ -86,63 +109,41 @@ func buildExpressionTree(tokens []token) (*Node, error) {
 				operatorStack[len(operatorStack)-1] != "(" {
 				op := operatorStack[len(operatorStack)-1]
 				operatorStack = operatorStack[:len(operatorStack)-1]
-				if len(outputQueue) < 2 {
-					return nil, fmt.Errorf("invalid expression")
+				if err := makeNode(op); err != nil {
+					return nil, err
 				}
-				right := outputQueue[len(outputQueue)-1]
-				left := outputQueue[len(outputQueue)-2]
-				outputQueue = outputQueue[:len(outputQueue)-2]
-				outputQueue = append(outputQueue, &Node{
-					Value:    op,
-					Left:     left,
-					Right:    right,
-					Priority: precedence(op),
-				})
 			}
 			operatorStack = append(operatorStack, t.value)
 		case leftParen:
 			operatorStack = append(operatorStack, t.value)
 		case rightParen:
+			found := false
 			for len(operatorStack) > 0 && operatorStack[len(operatorStack)-1] != "(" {
 				op := operatorStack[len(operatorStack)-1]
 				operatorStack = operatorStack[:len(operatorStack)-1]
-				if len(outputQueue) < 2 {
-					return nil, fmt.Errorf("invalid expression")
+				if err := makeNode(op); err != nil {
+					return nil, err
 				}
-				right := outputQueue[len(outputQueue)-1]
-				left := outputQueue[len(outputQueue)-2]
-				outputQueue = outputQueue[:len(outputQueue)-2]
-				outputQueue = append(outputQueue, &Node{
-					Value:    op,
-					Left:     left,
-					Right:    right,
-					Priority: precedence(op),
-				})
+				found = true
 			}
 			if len(operatorStack) == 0 {
 				return nil, fmt.Errorf("unbalanced parentheses")
 			}
 			operatorStack = operatorStack[:len(operatorStack)-1]
+			_ = found
 		}
 	}
 
 	for len(operatorStack) > 0 {
 		op := operatorStack[len(operatorStack)-1]
 		operatorStack = operatorStack[:len(operatorStack)-1]
-		if len(outputQueue) < 2 {
-			return nil, fmt.Errorf("invalid expression")
+		if op == "(" {
+			return nil, fmt.Errorf("unbalanced parentheses")
 		}
-		right := outputQueue[len(outputQueue)-1]
-		left := outputQueue[len(outputQueue)-2]
-		outputQueue = outputQueue[:len(outputQueue)-2]
-		outputQueue = append(outputQueue, &Node{
-			Value:    op,
-			Left:     left,
-			Right:    right,
-			Priority: precedence(op),
-		})
+		if err := makeNode(op); err != nil {
+			return nil, err
+		}
 	}
-
 	if len(outputQueue) != 1 {
 		return nil, fmt.Errorf("invalid expression")
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,10 +9,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"calc-service/pkg/config"
 )
 
 type Task struct {
@@ -29,173 +34,248 @@ type TaskResponse struct {
 	Task *Task `json:"task"`
 }
 
-const (
-	maxRetries     = 5
-	baseRetryDelay = 2 * time.Second
-)
+type agent struct {
+	cfg    *config.Config
+	client *http.Client
 
-var (
-	taskMutex        sync.Mutex
-	activeWorkers    int
-	maxWorkers       int
-	agentToken       string
-	orchestratorHost string
-)
+	mu    sync.RWMutex
+	token string
+}
 
 func main() {
-	orchestratorHost = os.Getenv("ORCHESTRATOR_HOST")
-	if orchestratorHost == "" {
-		orchestratorHost = "localhost"
-	}
-
-	agentToken = fetchToken()
-
-	maxWorkers = getEnvAsInt("COMPUTING_POWER", 10)
-	log.Printf("Starting agent with %d workers", maxWorkers)
-
-	for i := 0; i < maxWorkers; i++ {
-		go worker(i + 1)
-	}
-
-	select {} // блокируем main навсегда
-}
-
-// TOKEN
-
-func fetchToken() string {
-	url := fmt.Sprintf("http://%s:8080/internal/agent/token", orchestratorHost)
-	log.Printf("Fetching token from %s", url)
-
-	resp, err := http.Get(url)
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to connect to orchestrator: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		log.Fatalf("Error while fetching token: %d - %s", resp.StatusCode, string(body))
+		log.Fatalf("configuration error: %v", err)
 	}
 
-	var tokenResp struct {
-		Token string `json:"token"`
+	a := &agent{
+		cfg: cfg,
+		client: &http.Client{
+			Timeout: cfg.RequestTimeout,
+		},
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		log.Fatalf("Failed to parse token: %v", err)
-	}
-
-	if tokenResp.Token == "" {
-		log.Fatal("Received empty token")
-	}
-
-	log.Println("Token successfully received")
-	return tokenResp.Token
-}
-
-// WORKER
-
-func worker(id int) {
-	for {
-		task, ok := fetchTask()
-		if !ok {
-			time.Sleep(1 * time.Second)
-			continue
-		}
-
-		log.Printf("Worker %d: Processing task %s (%s %s %s)", id, task.ID, task.Arg1, task.Operator, task.Arg2)
-
-		result, err := processTask(task)
-		if err != nil {
-			log.Printf("Worker %d: Task %s failed: %v", id, task.ID, err)
-			updateWorkerCount(-1)
-			continue
-		}
-
-		if err := sendResultWithRetry(task.ID, result); err != nil {
-			log.Printf("Worker %d: Failed to send result: %v", id, err)
-		} else {
-			log.Printf("Worker %d: Result %.2f for task %s sent", id, result, task.ID)
-		}
-
-		updateWorkerCount(-1)
-	}
-}
-
-func updateWorkerCount(delta int) {
-	taskMutex.Lock()
-	activeWorkers += delta
-	taskMutex.Unlock()
-}
-
-// TASK FETCH
-
-func fetchTask() (*Task, bool) {
-	taskMutex.Lock()
-	defer taskMutex.Unlock()
-
-	if activeWorkers >= maxWorkers {
-		return nil, false
+	if err := a.refreshToken(context.Background()); err != nil {
+		log.Fatalf("cannot obtain agent token: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	url := fmt.Sprintf("http://%s:8080/internal/task", orchestratorHost)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		log.Printf("Request creation error: %v", err)
-		return nil, false
+	var wg sync.WaitGroup
+	workers := workerCount(cfg)
+	log.Printf("starting agent with %d workers, orchestrator %s", workers, cfg.BaseURL())
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			a.worker(ctx, id)
+		}(i + 1)
 	}
-	addAuthHeader(req)
 
-	resp, err := http.DefaultClient.Do(req)
+	<-ctx.Done()
+	log.Println("shutting down, waiting for workers")
+	wg.Wait()
+}
+
+func workerCount(cfg *config.Config) int {
+	if v := os.Getenv("COMPUTING_POWER"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 1
+}
+
+// refreshToken получает токен агента по bootstrap-ключу.
+func (a *agent) refreshToken(ctx context.Context) error {
+	url := a.cfg.BaseURL() + "/internal/agent/token"
+	var lastErr error
+	for i := 0; i < a.cfg.MaxRetries; i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("X-Bootstrap-Key", a.cfg.AgentBootstrapKey)
+		resp, err := a.client.Do(req)
+		if err == nil {
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				err = readErr
+			} else if resp.StatusCode != http.StatusOK {
+				err = fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			} else {
+				var result struct {
+					Token string `json:"token"`
+				}
+				if err = json.Unmarshal(body, &result); err == nil && result.Token != "" {
+					a.mu.Lock()
+					a.token = result.Token
+					a.mu.Unlock()
+					log.Println("agent token received")
+					return nil
+				}
+				if err == nil {
+					err = fmt.Errorf("empty token")
+				}
+			}
+		}
+		lastErr = err
+		if i < a.cfg.MaxRetries-1 {
+			delay := retryDelay(a.cfg, i)
+			log.Printf("token fetch retry %d/%d in %s: %v", i+1, a.cfg.MaxRetries, delay, err)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
+	return fmt.Errorf("fetch agent token: %w", lastErr)
+}
+
+func (a *agent) authToken() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.token
+}
+
+// doRequest выполняет запрос и обновляет токен при 401.
+func (a *agent) doRequest(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	do := func() (*http.Response, error) {
+		var reader io.Reader
+		if body != nil {
+			reader = bytes.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, a.cfg.BaseURL()+path, reader)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+a.authToken())
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		return a.client.Do(req)
+	}
+
+	resp, err := do()
 	if err != nil {
-		log.Printf("Fetch error: %v", err)
-		return nil, false
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		_ = resp.Body.Close()
+		if err := a.refreshToken(ctx); err != nil {
+			return nil, err
+		}
+		return do()
+	}
+	return resp, nil
+}
+
+func (a *agent) worker(ctx context.Context, id int) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		task, err := a.fetchTask(ctx)
+		if err != nil {
+			log.Printf("worker %d: fetch task: %v", id, err)
+		} else if task != nil {
+			a.process(ctx, id, task)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+func (a *agent) fetchTask(ctx context.Context) (*Task, error) {
+	resp, err := a.doRequest(ctx, http.MethodGet, "/internal/task", nil)
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, false
+		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		log.Printf("Server error: %d - %s", resp.StatusCode, string(body))
-		return nil, false
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-
-	var response TaskResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		log.Printf("Decode error: %v", err)
-		return nil, false
+	var result TaskResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode task: %w", err)
 	}
-	if response.Task == nil {
-		return nil, false
-	}
-
-	activeWorkers++
-	return response.Task, true
+	return result.Task, nil
 }
 
-// PROCESSING
+func (a *agent) process(ctx context.Context, id int, task *Task) {
+	log.Printf("worker %d: task %s (%s %s %s)", id, task.ID, task.Arg1, task.Operator, task.Arg2)
+	result, err := a.compute(ctx, task)
+	if err != nil {
+		log.Printf("worker %d: task %s failed: %v", id, task.ID, err)
+		a.reportFailure(ctx, task.ID, err.Error())
+		return
+	}
+	if err := a.withRetry(ctx, func() error { return a.sendResult(ctx, task.ID, result) }); err != nil {
+		log.Printf("worker %d: cannot send result for %s: %v", id, task.ID, err)
+		return
+	}
+	log.Printf("worker %d: result %.4f for %s sent", id, result, task.ID)
+}
 
-func processTask(task *Task) (float64, error) {
-	arg1, err := resolveArgument(task.Arg1)
+func (a *agent) compute(ctx context.Context, task *Task) (float64, error) {
+	arg1, err := a.resolveArgument(ctx, task.Arg1)
 	if err != nil {
 		return 0, fmt.Errorf("arg1: %w", err)
 	}
-	arg2, err := resolveArgument(task.Arg2)
+	arg2, err := a.resolveArgument(ctx, task.Arg2)
 	if err != nil {
 		return 0, fmt.Errorf("arg2: %w", err)
 	}
-	time.Sleep(time.Duration(task.OperationTime) * time.Millisecond)
+	if task.OperationTime < 0 || task.OperationTime > a.cfg.MaxOperationTimeMS {
+		return 0, fmt.Errorf("invalid operation time %d", task.OperationTime)
+	}
+	if task.OperationTime > 0 {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(time.Duration(task.OperationTime) * time.Millisecond):
+		}
+	}
 	return calculate(task.Operator, arg1, arg2)
 }
 
-func resolveArgument(arg string) (float64, error) {
+func (a *agent) resolveArgument(ctx context.Context, arg string) (float64, error) {
 	if strings.HasPrefix(arg, "task:") {
 		id := strings.TrimPrefix(arg, "task:")
-		return fetchTaskResultWithRetry(id)
+		var value float64
+		err := a.withRetry(ctx, func() error {
+			resp, err := a.doRequest(ctx, http.MethodGet, "/internal/task/result/"+id, nil)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
+			var result struct {
+				Result float64 `json:"result"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				return err
+			}
+			value = result.Result
+			return nil
+		})
+		return value, err
 	}
 	return strconv.ParseFloat(arg, 64)
 }
@@ -214,124 +294,72 @@ func calculate(op string, a, b float64) (float64, error) {
 		}
 		return a / b, nil
 	default:
-		return 0, fmt.Errorf("unknown operator: %s", op)
+		return 0, fmt.Errorf("unknown operator %q", op)
 	}
 }
 
-// TASK RESULT FETCH
-
-func fetchTaskResult(id string) (float64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	url := fmt.Sprintf("http://%s:8080/internal/task/result/%s", orchestratorHost, id)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return 0, fmt.Errorf("request error: %w", err)
-	}
-	addAuthHeader(req)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("network error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Result float64 `json:"result"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, fmt.Errorf("decode error: %w", err)
-	}
-	return result.Result, nil
-}
-
-func fetchTaskResultWithRetry(id string) (float64, error) {
-	var lastErr error
-	for i := 0; i < maxRetries; i++ {
-		res, err := fetchTaskResult(id)
-		if err == nil {
-			return res, nil
-		}
-		lastErr = err
-		delay := time.Duration(1<<uint(i)) * baseRetryDelay
-		log.Printf("Retry %d/%d task %s: %v", i+1, maxRetries, id, err)
-		time.Sleep(delay)
-	}
-	return 0, fmt.Errorf("max retries for task %s: %v", id, lastErr)
-}
-
-// TASK RESULT SEND
-
-func sendResult(taskID string, result float64) error {
-	payload := struct {
+func (a *agent) sendResult(ctx context.Context, taskID string, result float64) error {
+	payload, err := json.Marshal(struct {
 		ID     string  `json:"id"`
 		Result float64 `json:"result"`
-	}{taskID, result}
-
-	data, _ := json.Marshal(payload)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	url := fmt.Sprintf("http://%s:8080/internal/task", orchestratorHost)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(string(data)))
+	}{taskID, result})
 	if err != nil {
-		return fmt.Errorf("request error: %w", err)
+		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	addAuthHeader(req)
-
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := a.doRequest(ctx, http.MethodPost, "/internal/task", payload)
 	if err != nil {
-		return fmt.Errorf("send error: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }
 
-func sendResultWithRetry(taskID string, result float64) error {
+func (a *agent) reportFailure(ctx context.Context, taskID, errText string) {
+	payload, err := json.Marshal(struct {
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}{taskID, errText})
+	if err != nil {
+		return
+	}
+	resp, err := a.doRequest(ctx, http.MethodPost, "/internal/task/fail", payload)
+	if err != nil {
+		log.Printf("cannot report failure for %s: %v", taskID, err)
+		return
+	}
+	_ = resp.Body.Close()
+}
+
+func (a *agent) withRetry(ctx context.Context, fn func() error) error {
 	var lastErr error
-	for i := 0; i < maxRetries; i++ {
-		if err := sendResult(taskID, result); err == nil {
+	for i := 0; i < a.cfg.MaxRetries; i++ {
+		if err := fn(); err == nil {
 			return nil
 		} else {
 			lastErr = err
 		}
-		delay := time.Duration(1<<uint(i)) * baseRetryDelay
-		log.Printf("Retry %d/%d sending result for task %s: %v", i+1, maxRetries, taskID, lastErr)
-		time.Sleep(delay)
+		if i == a.cfg.MaxRetries-1 {
+			break
+		}
+		delay := retryDelay(a.cfg, i)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
 	}
-	return fmt.Errorf("max retries for sending result %s: %v", taskID, lastErr)
+	return lastErr
 }
 
-// UTILS
-
-func addAuthHeader(req *http.Request) {
-	if agentToken != "" {
-		req.Header.Set("Authorization", "Bearer "+agentToken)
+func retryDelay(cfg *config.Config, attempt int) time.Duration {
+	delay := cfg.RetryBaseDelay * time.Duration(1<<uint(attempt))
+	max := 30 * time.Second
+	if delay > max {
+		return max
 	}
-}
-
-func getEnvAsInt(key string, def int) int {
-	val := os.Getenv(key)
-	if val == "" {
-		return def
-	}
-	n, err := strconv.Atoi(val)
-	if err != nil {
-		log.Printf("Invalid value for %s, using default %d", key, def)
-		return def
-	}
-	return n
+	return delay
 }

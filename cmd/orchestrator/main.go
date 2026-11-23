@@ -1,158 +1,161 @@
 package main
 
 import (
-	"calc-service/internal/handler"
-	"calc-service/pkg/database"
-	"calc-service/pkg/logger"
-	"encoding/json"
+	"context"
+	"crypto/subtle"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
-	"github.com/google/uuid"
+	"calc-service/internal/calculator"
+	"calc-service/internal/handler"
+	"calc-service/pkg/config"
+	"calc-service/pkg/database"
+	"calc-service/pkg/logger"
 )
 
 func main() {
-	// Initialize logger
-	initLogger()
-
-	// Validate critical environment variables
-	if os.Getenv("JWT_SECRET") == "" {
-		if os.Getenv("ENV") == "production" {
-			logger.Error("FATAL: JWT_SECRET environment variable not set in production!")
-			log.Fatal("JWT_SECRET must be set in production")
-		} else {
-			logger.Error("WARNING: JWT_SECRET environment variable not set. Using an insecure default value for development only!")
-			os.Setenv("JWT_SECRET", "insecure-default-secret-"+uuid.New().String())
-		}
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("configuration error: %v", err)
 	}
+	if err := logger.Init(cfg.Env, cfg.LogLevel); err != nil {
+		log.Fatalf("logger error: %v", err)
+	}
+	defer logger.Sync()
 
-	// Initialize database
-	if err := database.InitDB(); err != nil {
-		logger.Error("Failed to initialize database: %v", err)
+	handler.SetJWTSecret(cfg.JWTSecret)
+	handler.SetAgentTokenTTL(cfg.AgentTokenTTL)
+	calculator.Configure(cfg.MaxExpressionLen, cfg.MaxTasksPerExpr, cfg.MaxOperationTimeMS)
+
+	if err := database.InitDB(cfg.DBPath); err != nil {
+		logger.Error("database error: %v", err)
 		log.Fatal(err)
 	}
-	defer database.CloseDB()
+	defer func() {
+		if err := database.CloseDB(); err != nil {
+			logger.Error("close database: %v", err)
+		}
+	}()
 
-	// Set up router with middleware
 	mux := http.NewServeMux()
-
-	// Public authentication endpoints
 	mux.HandleFunc("/api/v1/register", handler.HandleRegister)
 	mux.HandleFunc("/api/v1/login", handler.HandleLogin)
 
-	// Protected API routes
-	// Create a subrouter with auth middleware
 	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Route based on path
 		switch {
 		case r.URL.Path == "/api/v1/calculate" && r.Method == http.MethodPost:
 			handler.HandleCalculate(w, r)
 		case r.URL.Path == "/api/v1/expressions" && r.Method == http.MethodGet:
 			handler.HandleExpressions(w, r)
-		case len(r.URL.Path) > len("/api/v1/expressions/") && r.URL.Path[:len("/api/v1/expressions/")] == "/api/v1/expressions/":
+		case hasPrefix(r.URL.Path, "/api/v1/expressions/"):
 			handler.HandleExpressionByID(w, r)
-		case len(r.URL.Path) > len("/api/v1/tasks/") && r.URL.Path[:len("/api/v1/tasks/")] == "/api/v1/tasks/":
+		case hasPrefix(r.URL.Path, "/api/v1/tasks/"):
 			handler.HandleTaskByID(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	})
-
-	// Apply authentication middleware to API routes
 	mux.Handle("/api/v1/calculate", handler.AuthMiddleware(apiHandler))
 	mux.Handle("/api/v1/expressions", handler.AuthMiddleware(apiHandler))
 	mux.Handle("/api/v1/expressions/", handler.AuthMiddleware(apiHandler))
 	mux.Handle("/api/v1/tasks/", handler.AuthMiddleware(apiHandler))
 
-	// Internal API for agents (should be protected differently or only accessible internally)
 	mux.Handle("/internal/task", handler.AgentAuthMiddleware(http.HandlerFunc(handler.TaskHandler)))
 	mux.Handle("/internal/task/result/", handler.AgentAuthMiddleware(http.HandlerFunc(handler.HandleInternalTaskByID)))
-	mux.HandleFunc("/internal/agent/token", handleAgentToken)
+	mux.Handle("/internal/task/fail", handler.AgentAuthMiddleware(http.HandlerFunc(handler.HandleTaskFailure)))
+	mux.HandleFunc("/internal/agent/token", func(w http.ResponseWriter, r *http.Request) {
+		handleAgentToken(w, r, cfg)
+	})
 
-	// Frontend
 	mux.Handle("/", http.FileServer(http.Dir("./static")))
 
-	// Read port from env, default to 8080
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
-	// Validate critical environment variables
-	if os.Getenv("JWT_SECRET") == "" {
-		logger.Error("WARNING: JWT_SECRET environment variable not set. Using an insecure default value!")
-		// In production, you might want to exit instead of using a default
-		os.Setenv("JWT_SECRET", "insecure-default-secret") // Only for development
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go startMaintenance(ctx, cfg.TaskPollInterval)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+
+	logger.Info("orchestrator listening on %s", srv.Addr)
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	select {
+	case sig := <-stop:
+		logger.Info("received %s, shutting down", sig)
+	case err := <-errCh:
+		if !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server failed: %v", err)
+			log.Fatal(err)
+		}
 	}
 
-	// Start background task to update task readiness periodically
-	go startTaskProcessor()
-
-	logger.Info("Server starting on http://localhost:%s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
-		logger.Error("Server failed: %v", err)
-		log.Fatal(err)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("shutdown: %v", err)
 	}
 }
 
-// Initialize logger
-func initLogger() {
-	// Dummy initialization to handle the case if logger.Init is not defined
+func hasPrefix(path, prefix string) bool {
+	return len(path) > len(prefix) && path[:len(prefix)] == prefix
+}
+
+func startMaintenance(ctx context.Context, interval time.Duration) {
 	defer func() {
-		if r := recover(); r != nil {
-			// If logger.Init panics, fall back to default logger
-			log.Println("Warning: Logger initialization failed, using default logger")
+		if p := recover(); p != nil {
+			logger.Error("maintenance panic: %v", p)
 		}
 	}()
-
-	// Initialize logger
-	logLevel := os.Getenv("LOG_LEVEL")
-	if logLevel == "" {
-		logLevel = "info"
-	}
-
-	logger.Init(logLevel)
-}
-
-func startTaskProcessor() {
-	// Periodically process tasks
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
-	logger.Info("Task processor started")
-
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
-			// Process tasks for all users
 			handler.ProcessPendingTasks()
 		}
 	}
 }
 
-func handleAgentToken(w http.ResponseWriter, r *http.Request) {
-	// Проверяем, что запрос выполняется с локального хоста или внутри сети
-	remoteIP := r.RemoteAddr
-	if !strings.HasPrefix(remoteIP, "127.0.0.1") && !strings.HasPrefix(remoteIP, "10.") &&
-		!strings.HasPrefix(remoteIP, "172.") && !strings.HasPrefix(remoteIP, "192.168.") {
+func handleAgentToken(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	provided := r.Header.Get("X-Bootstrap-Key")
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(cfg.AgentBootstrapKey)) != 1 {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-
-	// Генерируем токен
 	token, err := handler.GenerateAgentToken()
 	if err != nil {
-		http.Error(w, "Failed to generate token: "+err.Error(), http.StatusInternalServerError)
+		logger.Error("generate agent token: %v", err)
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
 		return
 	}
+	writeToken(w, token)
+}
 
-	// Возвращаем токен в формате JSON
+func writeToken(w http.ResponseWriter, token string) {
 	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(map[string]string{"token": token})
-	if err != nil {
-		http.Error(w, "Failed to encode token: "+err.Error(), http.StatusInternalServerError)
+	if _, err := fmt.Fprintf(w, "{\"token\":%q}\n", token); err != nil {
+		logger.Error("write token: %v", err)
 	}
 }

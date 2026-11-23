@@ -5,63 +5,59 @@ import (
 	"calc-service/pkg/logger"
 	"fmt"
 	"strings"
+	"time"
 )
 
-// ProcessExpression processes a mathematical expression and returns the expression object
-func ProcessExpression(exprStr string, userID string) (*store.Expression, error) {
-	//logger.Info("Processing expression: %s (user: %s)", exprStr, userID)
+var (
+	maxExpressionLen = 256
+	maxTasksPerExpr  = 256
+	maxOperationMS   = 30000
+)
 
+// Configure задаёт ограничения парсера и планировщика.
+func Configure(exprLen, tasks int, operationMS int) {
+	if exprLen > 0 {
+		maxExpressionLen = exprLen
+	}
+	if tasks > 0 {
+		maxTasksPerExpr = tasks
+	}
+	if operationMS > 0 {
+		maxOperationMS = operationMS
+	}
+}
+
+// ProcessExpression проверяет выражение и атомарно создаёт выражение с задачами.
+func ProcessExpression(exprStr, userID string) (*store.Expression, error) {
 	exprStr = strings.ReplaceAll(exprStr, " ", "")
+	if len([]rune(exprStr)) > maxExpressionLen {
+		return nil, fmt.Errorf("expression is too long (limit %d)", maxExpressionLen)
+	}
 	if err := ValidateExpression(exprStr); err != nil {
-		logger.Error("ProcessExpression: Validation error: %v", err)
 		return nil, err
 	}
-
 	tokens, err := tokenize(exprStr)
 	if err != nil {
-		logger.Error("ProcessExpression: Tokenization failed: %v", err)
 		return nil, err
 	}
-
 	tree, err := buildExpressionTree(tokens)
 	if err != nil {
-		logger.Error("ProcessExpression: Expression tree build failed: %v", err)
 		return nil, err
 	}
 
-	expr, err := store.NewExpression(exprStr, userID)
+	id := fmt.Sprintf("expr-%d", time.Now().UnixNano())
+	tasks, err := createTasksFromTree(id, tree)
 	if err != nil {
-		logger.Error("ProcessExpression: Failed to create expression record: %v", err)
-		return nil, fmt.Errorf("failed to create expression record: %w", err)
-	}
-	logger.Info("ProcessExpression: Created expression: %s", expr.ID)
-
-	tasks, err := createTasksFromTree(expr.ID, tree)
-	if err != nil {
-		logger.Error("Task generation failed: %v", err)
 		return nil, err
 	}
-	logger.Info("ProcessExpression: Generated %d tasks for expression %s", len(tasks), expr.ID)
-
-	if err := store.RegisterTasks(expr.ID, userID, tasks); err != nil {
-		logger.Error("Failed to register tasks: %v", err)
-		return nil, fmt.Errorf("failed to register tasks: %w", err)
+	if len(tasks) > maxTasksPerExpr {
+		return nil, fmt.Errorf("too many operations (limit %d)", maxTasksPerExpr)
 	}
 
-	// Проверяем наличие выполнимых задач (задач без зависимостей)
-	executableTasks, err := store.GetExecutableTasks(expr.ID, userID)
+	expr, err := store.CreateExpressionWithTasks(id, exprStr, userID, tasks)
 	if err != nil {
-		logger.Error("ProcessExpression: Failed to get executable tasks: %v", err)
-		return nil, fmt.Errorf("failed to get executable tasks: %w", err)
+		logger.Error("create expression: %v", err)
+		return nil, fmt.Errorf("create expression: %w", err)
 	}
-
-	// Если есть задачи, которые можно выполнить немедленно, обновляем статус выражения
-	if len(executableTasks) > 0 {
-		logger.Info("ProcessExpression: Expression %s has %d immediately executable tasks", expr.ID, len(executableTasks))
-	} else {
-		logger.Info("ProcessExpression: Expression %s has no immediately executable tasks", expr.ID)
-	}
-
-	logger.Info("ProcessExpression: Expression %s processed successfully", expr.ID)
 	return expr, nil
 }
