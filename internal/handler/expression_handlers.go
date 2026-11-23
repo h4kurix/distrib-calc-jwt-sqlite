@@ -25,6 +25,7 @@ type ExpressionResponse struct {
 	ID     string  `json:"id"`
 	Status string  `json:"status"`
 	Result float64 `json:"result,omitempty"`
+	Error  string  `json:"error,omitempty"`
 }
 
 type ExpressionDetailResponse struct {
@@ -33,35 +34,28 @@ type ExpressionDetailResponse struct {
 
 func HandleCalculate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		logger.Warn("HandleCalculate: Method not allowed: %s", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	userID := getUserIDFromContext(r.Context())
-	logger.Info("HandleCalculate: Received request from userID: %s", userID)
+	if userID == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	var req CalculateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		logger.Error("HandleCalculate: Failed to decode request: %v", err)
-		http.Error(w, "Invalid request body", http.StatusUnprocessableEntity)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-
-	logger.Info("HandleCalculate: Processing expression: %s", req.Expression)
 
 	expr, err := calculator.ProcessExpression(req.Expression, userID)
 	if err != nil {
-		logger.Error("HandleCalculate: Expression processing error: %v", err)
-		http.Error(w, "Invalid expression: "+err.Error(), http.StatusUnprocessableEntity)
+		logger.Error("process expression: %v", err)
+		http.Error(w, "Invalid expression", http.StatusUnprocessableEntity)
 		return
 	}
-
-	logger.Info("HandleCalculate: Task created with ID: %s, status: %s", expr.ID, expr.Status)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(CalculateResponse{ID: expr.ID})
+	writeJSON(w, http.StatusCreated, CalculateResponse{ID: expr.ID})
 }
 
 func HandleExpressions(w http.ResponseWriter, r *http.Request) {
@@ -69,52 +63,43 @@ func HandleExpressions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	// Получаем userID из контекста
 	userID := getUserIDFromContext(r.Context())
-
-	expressions := store.ListExpressions(userID) // фильтруем по userID
-	response := make([]ExpressionResponse, 0, len(expressions))
-
-	for _, expr := range expressions {
-		response = append(response, ExpressionResponse{
-			ID:     expr.ID,
-			Status: expr.Status,
-			Result: expr.Result,
-		})
+	expressions, err := store.ListExpressions(userID)
+	if err != nil {
+		logger.Error("list expressions: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(ExpressionsResponse{Expressions: response})
+	response := make([]ExpressionResponse, 0, len(expressions))
+	for _, e := range expressions {
+		response = append(response, ExpressionResponse{
+			ID: e.ID, Status: e.Status, Result: e.Result, Error: e.Error,
+		})
+	}
+	writeJSON(w, http.StatusOK, ExpressionsResponse{Expressions: response})
 }
 
 func HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		logger.Warn("HandleExpressionByID: Method not allowed: %s", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
+	userID := getUserIDFromContext(r.Context())
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/expressions/")
-	logger.Info("HandleExpressionByID: Looking for expression ID: %s", id)
 
-	expr, exists := store.GetExpression(id)
-	if !exists {
-		logger.Warn("HandleExpressionByID: Expression not found: %s", id)
+	expr, found, err := store.GetExpression(id)
+	if err != nil {
+		logger.Error("get expression: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !found || expr.UserID != userID {
 		http.Error(w, "Expression not found", http.StatusNotFound)
 		return
 	}
 
-	logger.Info("HandleExpressionByID: Found expression ID: %s, status: %s", expr.ID, expr.Status)
-
-	response := ExpressionResponse{
-		ID:     expr.ID,
-		Status: expr.Status,
-		Result: expr.Result,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(ExpressionDetailResponse{Expression: response})
+	writeJSON(w, http.StatusOK, ExpressionDetailResponse{Expression: ExpressionResponse{
+		ID: expr.ID, Status: expr.Status, Result: expr.Result, Error: expr.Error,
+	}})
 }
