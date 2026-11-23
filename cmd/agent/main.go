@@ -326,12 +326,21 @@ func (a *agent) reportFailure(ctx context.Context, taskID, errText string) {
 	if err != nil {
 		return
 	}
-	resp, err := a.doRequest(ctx, http.MethodPost, "/internal/task/fail", payload)
+	err = a.withRetry(ctx, func() error {
+		resp, err := a.doRequest(ctx, http.MethodPost, "/internal/task/fail", payload)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		return nil
+	})
 	if err != nil {
 		log.Printf("cannot report failure for %s: %v", taskID, err)
-		return
 	}
-	_ = resp.Body.Close()
 }
 
 func (a *agent) withRetry(ctx context.Context, fn func() error) error {
@@ -356,6 +365,12 @@ func (a *agent) withRetry(ctx context.Context, fn func() error) error {
 }
 
 func retryDelay(cfg *config.Config, attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	if attempt > 10 {
+		attempt = 10
+	}
 	delay := cfg.RetryBaseDelay * time.Duration(1<<uint(attempt))
 	max := 30 * time.Second
 	if delay > max {

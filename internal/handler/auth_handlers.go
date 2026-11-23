@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -45,7 +46,11 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	user, err := store.CreateUser(req.Username, req.Password)
 	if err != nil {
 		logger.Error("register %q failed: %v", req.Username, err)
-		http.Error(w, "Could not create user", http.StatusConflict)
+		if errors.Is(err, store.ErrUsernameExists) {
+			http.Error(w, "Username already exists", http.StatusConflict)
+			return
+		}
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	token, err := generateToken(user.ID)

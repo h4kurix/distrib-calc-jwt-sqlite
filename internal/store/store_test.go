@@ -4,6 +4,7 @@ import (
 	"calc-service/internal/store"
 	"calc-service/pkg/database"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -67,6 +68,47 @@ func TestClaimAndCompleteTask(t *testing.T) {
 	next, ok, err := store.ClaimNextTask()
 	if err != nil || !ok || next.ID != "t2" {
 		t.Fatalf("next task: %v ok=%v err=%v", next, ok, err)
+	}
+}
+
+func TestConcurrentFinalize(t *testing.T) {
+	setupDB(t)
+	user, _ := store.CreateUser("race", "password123")
+	tasks := []*store.Task{
+		{ID: "r1", Arg1: "2", Arg2: "3", Operator: "+", OperationTime: 1},
+		{ID: "r2", Arg1: "task:r1", Arg2: "4", Operator: "*", OperationTime: 1},
+	}
+	if _, err := store.CreateExpressionWithTasks("expr-race", "2+3*4", user.ID, tasks); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		claimed, ok, err := store.ClaimNextTask()
+		if err != nil || !ok {
+			t.Fatalf("claim %d: ok=%v err=%v", i, ok, err)
+		}
+		if err := store.CompleteTask(claimed.ID, float64(i+2)); err != nil {
+			t.Fatalf("complete: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = store.FinalizeExpression("expr-race", user.ID, func([]*store.Task) (float64, error) {
+				return 14, nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	expr, found, err := store.GetExpression("expr-race")
+	if err != nil || !found {
+		t.Fatalf("get: found=%v err=%v", found, err)
+	}
+	if expr.Status != "completed" || expr.Result != 14 {
+		t.Fatalf("status=%q result=%v, want completed/14", expr.Status, expr.Result)
 	}
 }
 
