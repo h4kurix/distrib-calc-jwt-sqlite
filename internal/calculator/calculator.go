@@ -4,8 +4,10 @@ import (
 	"calc-service/internal/id"
 	"calc-service/internal/store"
 	"calc-service/pkg/logger"
+	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -13,27 +15,54 @@ import (
 // Handler показывает клиенту только валидацию.
 var ErrInternal = errors.New("internal error")
 
+// Limits задаёт ограничения парсера, планировщика и время операций.
+type Limits struct {
+	MaxExpressionLen int
+	MaxTasksPerExpr  int
+	MaxOperationMS   int
+	AdditionMS       int
+	SubtractionMS    int
+	MultiplicationMS int
+	DivisionMS       int
+}
+
 var (
 	maxExpressionLen = 256
 	maxTasksPerExpr  = 256
 	maxOperationMS   = 30000
+
+	defaultOperationTimes = map[string]int{"+": 100, "-": 100, "*": 200, "/": 300}
+	operationTimes        = maps.Clone(defaultOperationTimes)
 )
 
-// Configure задаёт ограничения парсера и планировщика.
-func Configure(exprLen, tasks int, operationMS int) {
-	if exprLen > 0 {
-		maxExpressionLen = exprLen
+// Configure задаёт ограничения из конфигурации сервиса.
+func Configure(l Limits) {
+	if l.MaxExpressionLen > 0 {
+		maxExpressionLen = l.MaxExpressionLen
 	}
-	if tasks > 0 {
-		maxTasksPerExpr = tasks
+	if l.MaxTasksPerExpr > 0 {
+		maxTasksPerExpr = l.MaxTasksPerExpr
 	}
-	if operationMS > 0 {
-		maxOperationMS = operationMS
+	if l.MaxOperationMS > 0 {
+		maxOperationMS = l.MaxOperationMS
+	}
+	operationTimes = maps.Clone(defaultOperationTimes)
+	if l.AdditionMS > 0 {
+		operationTimes["+"] = l.AdditionMS
+	}
+	if l.SubtractionMS > 0 {
+		operationTimes["-"] = l.SubtractionMS
+	}
+	if l.MultiplicationMS > 0 {
+		operationTimes["*"] = l.MultiplicationMS
+	}
+	if l.DivisionMS > 0 {
+		operationTimes["/"] = l.DivisionMS
 	}
 }
 
 // ProcessExpression проверяет выражение и атомарно создаёт выражение с задачами.
-func ProcessExpression(exprStr, userID string) (*store.Expression, error) {
+func ProcessExpression(ctx context.Context, exprStr, userID string) (*store.Expression, error) {
 	exprStr = strings.ReplaceAll(exprStr, " ", "")
 	if len([]rune(exprStr)) > maxExpressionLen {
 		return nil, fmt.Errorf("expression is too long (limit %d)", maxExpressionLen)
@@ -59,7 +88,7 @@ func ProcessExpression(exprStr, userID string) (*store.Expression, error) {
 		return nil, fmt.Errorf("too many operations (limit %d)", maxTasksPerExpr)
 	}
 
-	expr, err := store.CreateExpressionWithTasks(exprID, exprStr, userID, tasks)
+	expr, err := store.CreateExpressionWithTasks(ctx, exprID, exprStr, userID, tasks)
 	if err != nil {
 		logger.Error("create expression: %v", err)
 		return nil, fmt.Errorf("%w: create expression: %v", ErrInternal, err)

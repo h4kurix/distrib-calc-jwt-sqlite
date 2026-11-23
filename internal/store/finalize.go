@@ -2,6 +2,7 @@ package store
 
 import (
 	"calc-service/pkg/database"
+	"context"
 	"database/sql"
 	"fmt"
 )
@@ -9,10 +10,10 @@ import (
 // FinalizeExpression обновляет статус выражения в одной транзакции.
 // aggregate вызывается внутри транзакции, поэтому счётчики и результат
 // всегда соответствуют одному и тому же снимку задач.
-func FinalizeExpression(exprID, userID string, aggregate func([]*Task) (float64, error)) error {
-	return database.Transaction(func(tx *sql.Tx) error {
+func FinalizeExpression(ctx context.Context, exprID, userID string, aggregate func([]*Task) (float64, error)) error {
+	return database.Transaction(ctx, func(tx *sql.Tx) error {
 		var status string
-		if err := tx.QueryRow(`SELECT status FROM expressions WHERE id = ?`, exprID).Scan(&status); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM expressions WHERE id = ?`, exprID).Scan(&status); err != nil {
 			return fmt.Errorf("expression %s: %w", exprID, err)
 		}
 		if status == "completed" || status == "error" {
@@ -21,7 +22,7 @@ func FinalizeExpression(exprID, userID string, aggregate func([]*Task) (float64,
 
 		var failed int
 		var failedErr string
-		if err := tx.QueryRow(
+		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*), COALESCE(MIN(NULLIF(TRIM(error), '')), '') FROM tasks
 			 WHERE expression_id = ? AND status = 'error'`, exprID,
 		).Scan(&failed, &failedErr); err != nil {
@@ -32,23 +33,23 @@ func FinalizeExpression(exprID, userID string, aggregate func([]*Task) (float64,
 			if failedErr == "" {
 				failedErr = "one or more tasks failed"
 			}
-			return updateExprTx(tx, exprID, "error", 0, failedErr)
+			return updateExprTx(ctx, tx, exprID, "error", 0, failedErr)
 		}
 
 		var incomplete int
-		if err := tx.QueryRow(
+		if err := tx.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM tasks WHERE expression_id = ? AND status != 'completed'`, exprID,
 		).Scan(&incomplete); err != nil {
 			return fmt.Errorf("count incomplete tasks: %w", err)
 		}
 		if incomplete > 0 {
 			if status == "pending" {
-				return updateExprTx(tx, exprID, "in_progress", 0, "")
+				return updateExprTx(ctx, tx, exprID, "in_progress", 0, "")
 			}
 			return nil
 		}
 
-		rows, err := tx.Query(
+		rows, err := tx.QueryContext(ctx,
 			`SELECT `+taskColumns+` FROM tasks WHERE expression_id = ? AND user_id = ? ORDER BY rowid ASC`,
 			exprID, userID,
 		)
@@ -72,15 +73,15 @@ func FinalizeExpression(exprID, userID string, aggregate func([]*Task) (float64,
 
 		result, err := aggregate(tasks)
 		if err != nil {
-			return updateExprTx(tx, exprID, "error", 0, err.Error())
+			return updateExprTx(ctx, tx, exprID, "error", 0, err.Error())
 		}
-		return updateExprTx(tx, exprID, "completed", result, "")
+		return updateExprTx(ctx, tx, exprID, "completed", result, "")
 	})
 }
 
 // updateExprTx пишет статус только если выражение ещё не финализировано.
-func updateExprTx(tx *sql.Tx, exprID, status string, result float64, errText string) error {
-	res, err := tx.Exec(
+func updateExprTx(ctx context.Context, tx *sql.Tx, exprID, status string, result float64, errText string) error {
+	res, err := tx.ExecContext(ctx,
 		`UPDATE expressions SET status = ?, result = ?, error = ?
 		 WHERE id = ? AND status IN ('pending', 'in_progress')`,
 		status, result, errText, exprID,

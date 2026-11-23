@@ -48,7 +48,7 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) error {
 }
 
 // HandleNotFound отвечает JSON: клиент всегда разбирает ответ как JSON.
-func HandleNotFound(w http.ResponseWriter) {
+func HandleNotFound(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusNotFound, "not found")
 }
 

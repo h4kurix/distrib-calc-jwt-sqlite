@@ -37,18 +37,7 @@ type AuthResponse struct {
 	Token string `json:"token"`
 }
 
-var (
-	agentTokenTTL = 24 * time.Hour
-	userTokenTTL  = 24 * time.Hour
-)
-
-// SetAgentTokenTTL задаёт срок жизни токена агента.
-func SetAgentTokenTTL(ttl time.Duration) { agentTokenTTL = ttl }
-
-// SetUserTokenTTL задаёт срок жизни пользовательского токена.
-func SetUserTokenTTL(ttl time.Duration) { userTokenTTL = ttl }
-
-func HandleRegister(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
@@ -63,7 +52,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := store.CreateUser(req.Username, req.Password)
+	user, err := store.CreateUser(r.Context(), req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, store.ErrUsernameExists) {
 			writeError(w, http.StatusConflict, "username already exists")
@@ -72,7 +61,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 		logAndFail(w, "register "+req.Username, err)
 		return
 	}
-	token, err := generateToken(user.ID)
+	token, err := d.generateToken(user.ID)
 	if err != nil {
 		logAndFail(w, "token generation", err)
 		return
@@ -80,7 +69,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, AuthResponse{Token: token})
 }
 
-func HandleLogin(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
@@ -90,7 +79,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	user, found, err := store.GetUserByUsername(req.Username)
+	user, found, err := store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
 		logAndFail(w, "login lookup", err)
 		return
@@ -99,7 +88,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	token, err := generateToken(user.ID)
+	token, err := d.generateToken(user.ID)
 	if err != nil {
 		logAndFail(w, "token generation", err)
 		return
@@ -133,31 +122,31 @@ func comparePassword(hash, password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 }
 
-func generateToken(userID string) (string, error) {
-	if len(jwtSecret) == 0 {
+func (d *Deps) generateToken(userID string) (string, error) {
+	if len(d.jwtSecret) == 0 {
 		return "", jwt.ErrInvalidKey
 	}
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"sub": userID,
 		"iat": now.Unix(),
-		"exp": now.Add(userTokenTTL).Unix(),
+		"exp": now.Add(d.userTokenTTL).Unix(),
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret)
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(d.jwtSecret)
 }
 
 // GenerateAgentToken создаёт токен для агента.
-func GenerateAgentToken() (string, error) {
-	if len(jwtSecret) == 0 {
+func (d *Deps) GenerateAgentToken() (string, error) {
+	if len(d.jwtSecret) == 0 {
 		return "", jwt.ErrInvalidKey
 	}
 	now := time.Now()
 	claims := jwt.MapClaims{
 		"role": "agent",
 		"iat":  now.Unix(),
-		"exp":  now.Add(agentTokenTTL).Unix(),
+		"exp":  now.Add(d.agentTokenTTL).Unix(),
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret)
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(d.jwtSecret)
 }
 
 // writeJSON кодирует ответ в буфер и ставит статус только после успешного кодирования.

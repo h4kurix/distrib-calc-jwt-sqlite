@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -183,19 +184,28 @@ func columnExists(conn *sql.DB, table, column string) (bool, error) {
 
 // Transaction выполняет fn в транзакции с откатом при ошибке или панике.
 // При SQLITE_BUSY транзакция повторяется: fn не имеет побочных эффектов вне tx.
-func Transaction(fn func(*sql.Tx) error) (err error) {
+// Ожидание между попытками прерывается по ctx.
+func Transaction(ctx context.Context, fn func(*sql.Tx) error) (err error) {
 	for attempt := 0; attempt < 5; attempt++ {
-		err = runTransaction(fn)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err = runTransaction(ctx, fn)
 		if err == nil || !isBusy(err) {
 			return err
 		}
-		time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+		delay := time.Duration(attempt+1) * 20 * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
 	}
 	return err
 }
 
-func runTransaction(fn func(*sql.Tx) error) (err error) {
-	tx, err := db.Begin()
+func runTransaction(ctx context.Context, fn func(*sql.Tx) error) (err error) {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

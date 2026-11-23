@@ -4,8 +4,6 @@ import (
 	"calc-service/internal/id"
 	"calc-service/internal/store"
 	"calc-service/pkg/logger"
-	"os"
-	"strconv"
 )
 
 // Node — узел дерева выражения.
@@ -15,9 +13,6 @@ type Node struct {
 	Right  *Node
 	TaskID string
 }
-
-// operationTimeFallback используется, когда переменная окружения не задана.
-var operationTimeFallback = map[string]int{"+": 100, "-": 100, "*": 200, "/": 300}
 
 func generateTaskID() string { return id.New("task") }
 
@@ -32,26 +27,12 @@ func getNodeReference(n *Node) string {
 }
 
 func getOperationTime(op string) int {
-	var envVar string
-	switch op {
-	case "+":
-		envVar = os.Getenv("TIME_ADDITION_MS")
-	case "-":
-		envVar = os.Getenv("TIME_SUBTRACTION_MS")
-	case "*":
-		envVar = os.Getenv("TIME_MULTIPLICATIONS_MS")
-	case "/":
-		envVar = os.Getenv("TIME_DIVISIONS_MS")
-	default:
+	t, ok := operationTimes[op]
+	if !ok {
 		return 0
 	}
-
-	fallback := operationTimeFallback[op]
-	t, err := strconv.Atoi(envVar)
-	if err != nil {
-		return fallback
-	}
 	if t < 0 || t > maxOperationMS {
+		fallback := defaultOperationTimes[op]
 		logger.Warn("operation time %d for %s is out of range, using %d", t, op, fallback)
 		return fallback
 	}

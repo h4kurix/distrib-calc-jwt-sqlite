@@ -21,11 +21,11 @@ func makeToken(t *testing.T, claims jwt.MapClaims) string {
 }
 
 func TestAuthMiddleware(t *testing.T) {
-	SetJWTSecret(testSecret)
+	deps := NewDeps(testSecret, 24*time.Hour, 24*time.Hour)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	h := AuthMiddleware(next)
+	h := deps.AuthMiddleware(next)
 
 	cases := []struct {
 		name   string
@@ -52,11 +52,11 @@ func TestAuthMiddleware(t *testing.T) {
 }
 
 func TestAgentAuthMiddleware(t *testing.T) {
-	SetJWTSecret(testSecret)
+	deps := NewDeps(testSecret, 24*time.Hour, 24*time.Hour)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	h := AgentAuthMiddleware(next)
+	h := deps.AgentAuthMiddleware(next)
 
 	agentToken := makeToken(t, jwt.MapClaims{"role": "agent", "exp": time.Now().Add(time.Hour).Unix()})
 	userToken := makeToken(t, jwt.MapClaims{"sub": "user-1", "exp": time.Now().Add(time.Hour).Unix()})

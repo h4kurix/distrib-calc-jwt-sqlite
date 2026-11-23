@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -32,7 +33,7 @@ const (
 func TaskHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		handleGetTask(w)
+		handleGetTask(w, r.Context())
 	case http.MethodPost:
 		handlePostTaskResult(w, r)
 	default:
@@ -40,8 +41,8 @@ func TaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func handleGetTask(w http.ResponseWriter) {
-	task, found, err := store.ClaimNextTask()
+func handleGetTask(w http.ResponseWriter, ctx context.Context) {
+	task, found, err := store.ClaimNextTask(ctx)
 	if err != nil {
 		logAndFail(w, "claim task", err)
 		return
@@ -62,7 +63,7 @@ func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, found, err := store.GetTask(req.ID)
+	task, found, err := store.GetTask(r.Context(), req.ID)
 	if err != nil {
 		logAndFail(w, "get task", err)
 		return
@@ -71,12 +72,12 @@ func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	if err := store.CompleteTask(req.ID, req.Result); err != nil {
+	if err := store.CompleteTask(r.Context(), req.ID, req.Result); err != nil {
 		logAndFail(w, "complete task", err)
 		return
 	}
 
-	if err := finalizeExpression(task.ExpressionID, task.UserID); err != nil {
+	if err := finalizeExpression(r.Context(), task.ExpressionID, task.UserID); err != nil {
 		logAndFail(w, "finalize expression "+task.ExpressionID, err)
 		return
 	}
@@ -84,8 +85,8 @@ func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 }
 
 // finalizeExpression обновляет статус выражения в одной транзакции.
-func finalizeExpression(exprID, userID string) error {
-	return store.FinalizeExpression(exprID, userID, calculator.AggregateResults)
+func finalizeExpression(ctx context.Context, exprID, userID string) error {
+	return store.FinalizeExpression(ctx, exprID, userID, calculator.AggregateResults)
 }
 
 // HandleTaskByID возвращает результат задачи владельцу.
@@ -104,7 +105,7 @@ func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	task, found, err := store.GetTask(id)
+	task, found, err := store.GetTask(r.Context(), id)
 	if err != nil {
 		logAndFail(w, "get task", err)
 		return
@@ -133,7 +134,7 @@ func HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	task, found, err := store.GetTask(req.ID)
+	task, found, err := store.GetTask(r.Context(), req.ID)
 	if err != nil {
 		logAndFail(w, "get task", err)
 		return
@@ -142,11 +143,11 @@ func HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	if err := store.FailTask(req.ID, req.Error); err != nil {
+	if err := store.FailTask(r.Context(), req.ID, req.Error); err != nil {
 		logAndFail(w, "fail task "+req.ID, err)
 		return
 	}
-	if err := finalizeExpression(task.ExpressionID, task.UserID); err != nil {
+	if err := finalizeExpression(r.Context(), task.ExpressionID, task.UserID); err != nil {
 		logAndFail(w, "finalize expression "+task.ExpressionID, err)
 		return
 	}
@@ -164,7 +165,7 @@ func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	task, found, err := store.GetTask(id)
+	task, found, err := store.GetTask(r.Context(), id)
 	if err != nil {
 		logAndFail(w, "get task", err)
 		return
@@ -180,8 +181,8 @@ func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 
 // ProcessPendingTasks выполняет обслуживание очереди: возвращает зависшие
 // задачи и закрывает выражения, которые уже не могут завершиться.
-func ProcessPendingTasks() {
-	n, err := store.ReleaseStaleTasks(staleTaskTimeout)
+func ProcessPendingTasks(ctx context.Context) {
+	n, err := store.ReleaseStaleTasks(ctx, staleTaskTimeout)
 	if err != nil {
 		logger.Error("release stale tasks: %v", err)
 		return
@@ -190,7 +191,7 @@ func ProcessPendingTasks() {
 		logger.Warn("released %d stale tasks", n)
 	}
 
-	expired, err := store.ExpireStaleExpressions(expressionTimeout)
+	expired, err := store.ExpireStaleExpressions(ctx, expressionTimeout)
 	if err != nil {
 		logger.Error("expire stale expressions: %v", err)
 		return

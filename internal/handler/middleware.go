@@ -13,12 +13,7 @@ type contextKey string
 
 const userIDKey contextKey = "userID"
 
-var jwtSecret []byte
-
-// SetJWTSecret задаёт ключ подписи. Вызывается при старте сервиса.
-func SetJWTSecret(secret string) { jwtSecret = []byte(secret) }
-
-func parseToken(r *http.Request) (*jwt.Token, error) {
+func (d *Deps) parseToken(r *http.Request) (*jwt.Token, error) {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
 		return nil, fmt.Errorf("missing bearer token")
@@ -27,21 +22,21 @@ func parseToken(r *http.Request) (*jwt.Token, error) {
 	if tokenString == "" {
 		return nil, fmt.Errorf("empty bearer token")
 	}
-	if len(jwtSecret) == 0 {
+	if len(d.jwtSecret) == 0 {
 		return nil, fmt.Errorf("server auth is not configured")
 	}
 	return jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return jwtSecret, nil
+		return d.jwtSecret, nil
 	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 }
 
 // AuthMiddleware пропускает только пользовательские токены с непустым sub.
-func AuthMiddleware(next http.Handler) http.Handler {
+func (d *Deps) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, err := parseToken(r)
+		token, err := d.parseToken(r)
 		if err != nil || !token.Valid {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
@@ -71,9 +66,9 @@ func getUserIDFromContext(ctx context.Context) string {
 }
 
 // AgentAuthMiddleware пропускает только токены агента.
-func AgentAuthMiddleware(next http.Handler) http.Handler {
+func (d *Deps) AgentAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token, err := parseToken(r)
+		token, err := d.parseToken(r)
 		if err != nil || !token.Valid {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return

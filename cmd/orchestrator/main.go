@@ -28,10 +28,16 @@ func main() {
 	}
 	defer logger.Sync()
 
-	handler.SetJWTSecret(cfg.JWTSecret)
-	handler.SetAgentTokenTTL(cfg.AgentTokenTTL)
-	handler.SetUserTokenTTL(cfg.UserTokenTTL)
-	calculator.Configure(cfg.MaxExpressionLen, cfg.MaxTasksPerExpr, cfg.MaxOperationTimeMS)
+	deps := handler.NewDeps(cfg.JWTSecret, cfg.AgentTokenTTL, cfg.UserTokenTTL)
+	calculator.Configure(calculator.Limits{
+		MaxExpressionLen: cfg.MaxExpressionLen,
+		MaxTasksPerExpr:  cfg.MaxTasksPerExpr,
+		MaxOperationMS:   cfg.MaxOperationTimeMS,
+		AdditionMS:       cfg.TimeAdditionMS,
+		SubtractionMS:    cfg.TimeSubtractionMS,
+		MultiplicationMS: cfg.TimeMultiplicationMS,
+		DivisionMS:       cfg.TimeDivisionMS,
+	})
 
 	if err := database.InitDB(cfg.DBPath); err != nil {
 		logger.Error("database error: %v", err)
@@ -47,14 +53,14 @@ func main() {
 	// Ограничиваем только публичные роуты аутентификации: bcrypt на каждый
 	// запрос делает перебор паролей дорогим для сервера.
 	authLimiter := handler.NewRateLimiter(20, time.Minute)
-	mux.HandleFunc("/api/v1/register", authLimiter(handler.HandleRegister))
-	mux.HandleFunc("/api/v1/login", authLimiter(handler.HandleLogin))
+	mux.HandleFunc("/api/v1/register", authLimiter(deps.HandleRegister))
+	mux.HandleFunc("/api/v1/login", authLimiter(deps.HandleLogin))
 
 	// Маршрут описан один раз. Параметр {id} доступен обработчику через
 	// r.PathValue. Проверку метода делает сам обработчик, чтобы ответ 405
 	// оставался JSON.
 	user := func(h http.HandlerFunc) http.Handler {
-		return handler.AuthMiddleware(h)
+		return deps.AuthMiddleware(h)
 	}
 	mux.Handle("/api/v1/calculate", user(handler.HandleCalculate))
 	mux.Handle("/api/v1/expressions", user(handler.HandleExpressions))
@@ -62,14 +68,17 @@ func main() {
 	mux.Handle("/api/v1/tasks/{id}", user(handler.HandleTaskByID))
 
 	agent := func(h http.HandlerFunc) http.Handler {
-		return handler.AgentAuthMiddleware(h)
+		return deps.AgentAuthMiddleware(h)
 	}
 	mux.Handle("/internal/task", agent(handler.TaskHandler))
 	mux.Handle("/internal/task/result/{id}", agent(handler.HandleInternalTaskByID))
 	mux.Handle("/internal/task/fail", agent(handler.HandleTaskFailure))
 	mux.HandleFunc("/internal/agent/token", func(w http.ResponseWriter, r *http.Request) {
-		handleAgentToken(w, r, cfg)
+		handleAgentToken(w, r, cfg, deps)
 	})
+	// Неизвестные API-пути тоже отвечают JSON, а не статикой FileServer.
+	mux.HandleFunc("/api/v1/", handler.HandleNotFound)
+	mux.HandleFunc("/internal/", handler.HandleNotFound)
 
 	staticDir := os.Getenv("STATIC_DIR")
 	if staticDir == "" {
@@ -137,13 +146,13 @@ func startMaintenance(ctx context.Context, interval time.Duration) {
 						logger.Error("maintenance panic: %v", p)
 					}
 				}()
-				handler.ProcessPendingTasks()
+				handler.ProcessPendingTasks(ctx)
 			}()
 		}
 	}
 }
 
-func handleAgentToken(w http.ResponseWriter, r *http.Request, cfg *config.Config) {
+func handleAgentToken(w http.ResponseWriter, r *http.Request, cfg *config.Config, deps *handler.Deps) {
 	if r.Method != http.MethodGet {
 		handler.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -153,7 +162,7 @@ func handleAgentToken(w http.ResponseWriter, r *http.Request, cfg *config.Config
 		handler.WriteError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	token, err := handler.GenerateAgentToken()
+	token, err := deps.GenerateAgentToken()
 	if err != nil {
 		logger.Error("generate agent token: %v", err)
 		handler.WriteError(w, http.StatusInternalServerError, "internal server error")

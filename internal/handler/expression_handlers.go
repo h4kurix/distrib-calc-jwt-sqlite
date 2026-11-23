@@ -50,7 +50,7 @@ func HandleCalculate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expr, err := calculator.ProcessExpression(req.Expression, userID)
+	expr, err := calculator.ProcessExpression(r.Context(), req.Expression, userID)
 	if err != nil {
 		if errors.Is(err, calculator.ErrInternal) {
 			logAndFail(w, "process expression", err)
@@ -72,7 +72,7 @@ func HandleExpressions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	expressions, err := store.ListExpressions(userID)
+	expressions, err := store.ListExpressions(r.Context(), userID)
 	if err != nil {
 		logAndFail(w, "list expressions", err)
 		return
@@ -103,7 +103,7 @@ func HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expr, found, err := store.GetExpression(id)
+	expr, found, err := store.GetExpression(r.Context(), id)
 	if err != nil {
 		logAndFail(w, "get expression", err)
 		return

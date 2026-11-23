@@ -10,45 +10,53 @@ import (
 
 // Config хранит всю конфигурацию сервиса. Значения приходят из окружения.
 type Config struct {
-	Env                string
-	LogLevel           string
-	Port               string
-	JWTSecret          string
-	DBPath             string
-	OrchestratorHost   string
-	OrchestratorPort   string
-	AgentBootstrapKey  string
-	AgentTokenTTL      time.Duration
-	UserTokenTTL       time.Duration
-	TaskPollInterval   time.Duration
-	RequestTimeout     time.Duration
-	MaxExpressionLen   int
-	MaxTasksPerExpr    int
-	MaxOperationTimeMS int
-	MaxRetries         int
-	RetryBaseDelay     time.Duration
+	Env                  string
+	LogLevel             string
+	Port                 string
+	JWTSecret            string
+	DBPath               string
+	OrchestratorHost     string
+	OrchestratorPort     string
+	AgentBootstrapKey    string
+	AgentTokenTTL        time.Duration
+	UserTokenTTL         time.Duration
+	TaskPollInterval     time.Duration
+	RequestTimeout       time.Duration
+	MaxExpressionLen     int
+	MaxTasksPerExpr      int
+	MaxOperationTimeMS   int
+	TimeAdditionMS       int
+	TimeSubtractionMS    int
+	TimeMultiplicationMS int
+	TimeDivisionMS       int
+	MaxRetries           int
+	RetryBaseDelay       time.Duration
 }
 
 // Load читает конфигурацию из окружения и проверяет обязательные поля.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Env:                envDefault("ENV", "dev"),
-		LogLevel:           envDefault("LOG_LEVEL", "info"),
-		Port:               envDefault("PORT", "8080"),
-		JWTSecret:          os.Getenv("JWT_SECRET"),
-		DBPath:             envDefault("DB_PATH", "data/calculator.db"),
-		OrchestratorHost:   envDefault("ORCHESTRATOR_HOST", "localhost"),
-		OrchestratorPort:   envDefault("ORCHESTRATOR_PORT", "8080"),
-		AgentBootstrapKey:  os.Getenv("AGENT_BOOTSTRAP_KEY"),
-		AgentTokenTTL:      durationDefault("AGENT_TOKEN_TTL", 24*time.Hour),
-		UserTokenTTL:       durationDefault("USER_TOKEN_TTL", 24*time.Hour),
-		TaskPollInterval:   durationDefault("TASK_POLL_INTERVAL", 500*time.Millisecond),
-		RequestTimeout:     durationDefault("REQUEST_TIMEOUT", 10*time.Second),
-		MaxExpressionLen:   intDefault("MAX_EXPRESSION_LEN", 256),
-		MaxTasksPerExpr:    intDefault("MAX_TASKS_PER_EXPR", 256),
-		MaxOperationTimeMS: intDefault("MAX_OPERATION_TIME_MS", 30000),
-		MaxRetries:         intDefault("MAX_RETRIES", 5),
-		RetryBaseDelay:     durationDefault("RETRY_BASE_DELAY", 2*time.Second),
+		Env:                  envDefault("ENV", "dev"),
+		LogLevel:             envDefault("LOG_LEVEL", "info"),
+		Port:                 envDefault("PORT", "8080"),
+		JWTSecret:            os.Getenv("JWT_SECRET"),
+		DBPath:               envDefault("DB_PATH", "data/calculator.db"),
+		OrchestratorHost:     envDefault("ORCHESTRATOR_HOST", "localhost"),
+		OrchestratorPort:     envDefault("ORCHESTRATOR_PORT", "8080"),
+		AgentBootstrapKey:    os.Getenv("AGENT_BOOTSTRAP_KEY"),
+		AgentTokenTTL:        durationDefault("AGENT_TOKEN_TTL", 24*time.Hour),
+		UserTokenTTL:         durationDefault("USER_TOKEN_TTL", 24*time.Hour),
+		TaskPollInterval:     durationDefault("TASK_POLL_INTERVAL", 500*time.Millisecond),
+		RequestTimeout:       durationDefault("REQUEST_TIMEOUT", 10*time.Second),
+		MaxExpressionLen:     intDefault("MAX_EXPRESSION_LEN", 256),
+		MaxTasksPerExpr:      intDefault("MAX_TASKS_PER_EXPR", 256),
+		MaxOperationTimeMS:   intDefault("MAX_OPERATION_TIME_MS", 30000),
+		TimeAdditionMS:       intDefault("TIME_ADDITION_MS", 100),
+		TimeSubtractionMS:    intDefault("TIME_SUBTRACTION_MS", 100),
+		TimeMultiplicationMS: intDefault("TIME_MULTIPLICATIONS_MS", 200),
+		TimeDivisionMS:       intDefault("TIME_DIVISIONS_MS", 300),
+		MaxRetries:           intDefault("MAX_RETRIES", 5),
+		RetryBaseDelay:       durationDefault("RETRY_BASE_DELAY", 2*time.Second),
 	}
 
 	if err := cfg.validate(); err != nil {

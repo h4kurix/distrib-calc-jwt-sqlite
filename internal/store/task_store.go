@@ -2,6 +2,7 @@ package store
 
 import (
 	"calc-service/pkg/database"
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -39,8 +40,8 @@ func scanTask(row rowScanner) (*Task, error) {
 }
 
 // GetTasksByExpression возвращает задачи в порядке создания.
-func GetTasksByExpression(exprID, userID string) ([]*Task, error) {
-	rows, err := database.GetDB().Query(
+func GetTasksByExpression(ctx context.Context, exprID, userID string) ([]*Task, error) {
+	rows, err := database.GetDB().QueryContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks
 		WHERE expression_id = ? AND user_id = ?
 		ORDER BY rowid ASC`, exprID, userID,
@@ -65,12 +66,12 @@ func GetTasksByExpression(exprID, userID string) ([]*Task, error) {
 }
 
 // ClaimNextTask атомарно захватывает одну готовую задачу.
-func ClaimNextTask() (*Task, bool, error) {
+func ClaimNextTask(ctx context.Context) (*Task, bool, error) {
 	for attempt := 0; attempt < 8; attempt++ {
 		var task *Task
-		err := database.Transaction(func(tx *sql.Tx) error {
-			row := tx.QueryRow(
-				`SELECT ` + taskColumns + ` FROM tasks t
+		err := database.Transaction(ctx, func(tx *sql.Tx) error {
+			row := tx.QueryRowContext(ctx,
+				`SELECT `+taskColumns+` FROM tasks t
 				WHERE t.status = 'pending'
 				AND NOT EXISTS (
 					SELECT 1 FROM tasks d
@@ -85,7 +86,7 @@ func ClaimNextTask() (*Task, bool, error) {
 			if err != nil {
 				return fmt.Errorf("select task: %w", err)
 			}
-			res, err := tx.Exec(
+			res, err := tx.ExecContext(ctx,
 				`UPDATE tasks SET status = 'claimed', attempts = attempts + 1, claimed_at = ?
 				 WHERE id = ? AND status = 'pending'`, time.Now(), t.ID,
 			)
@@ -114,8 +115,8 @@ func ClaimNextTask() (*Task, bool, error) {
 }
 
 // ReleaseStaleTasks возвращает в очередь задачи, зависшие после падения агента.
-func ReleaseStaleTasks(timeout time.Duration) (int, error) {
-	res, err := database.GetDB().Exec(
+func ReleaseStaleTasks(ctx context.Context, timeout time.Duration) (int, error) {
+	res, err := database.GetDB().ExecContext(ctx,
 		`UPDATE tasks SET status = 'pending' WHERE status = 'claimed' AND claimed_at < ?`,
 		time.Now().Add(-timeout),
 	)
@@ -127,8 +128,8 @@ func ReleaseStaleTasks(timeout time.Duration) (int, error) {
 }
 
 // GetTask возвращает задачу по ID.
-func GetTask(taskID string) (*Task, bool, error) {
-	t, err := scanTask(database.GetDB().QueryRow(
+func GetTask(ctx context.Context, taskID string) (*Task, bool, error) {
+	t, err := scanTask(database.GetDB().QueryRowContext(ctx,
 		`SELECT `+taskColumns+` FROM tasks WHERE id = ?`, taskID,
 	))
 	if err == sql.ErrNoRows {
@@ -141,16 +142,16 @@ func GetTask(taskID string) (*Task, bool, error) {
 }
 
 // CompleteTask идемпотентно завершает задачу и не перезаписывает готовый результат.
-func CompleteTask(taskID string, result float64) error {
-	return database.Transaction(func(tx *sql.Tx) error {
+func CompleteTask(ctx context.Context, taskID string, result float64) error {
+	return database.Transaction(ctx, func(tx *sql.Tx) error {
 		var status string
-		if err := tx.QueryRow(`SELECT status FROM tasks WHERE id = ?`, taskID).Scan(&status); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM tasks WHERE id = ?`, taskID).Scan(&status); err != nil {
 			return fmt.Errorf("task %s: %w", taskID, err)
 		}
 		if status == "completed" {
 			return nil
 		}
-		res, err := tx.Exec(
+		res, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET completed = 1, result = ?, status = 'completed', error = ''
 			 WHERE id = ? AND status IN ('claimed', 'error')`,
 			result, taskID,
@@ -170,8 +171,8 @@ func CompleteTask(taskID string, result float64) error {
 }
 
 // FailTask отмечает задачу как ошибочную.
-func FailTask(taskID, errText string) error {
-	res, err := database.GetDB().Exec(
+func FailTask(ctx context.Context, taskID, errText string) error {
+	res, err := database.GetDB().ExecContext(ctx,
 		`UPDATE tasks SET status = 'error', error = ?, claimed_at = NULL WHERE id = ? AND status = 'claimed'`,
 		errText, taskID,
 	)
