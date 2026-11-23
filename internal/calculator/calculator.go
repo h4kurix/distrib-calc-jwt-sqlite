@@ -47,16 +47,16 @@ func Configure(l Limits) {
 		maxOperationMS = l.MaxOperationMS
 	}
 	operationTimes = maps.Clone(defaultOperationTimes)
-	if l.AdditionMS > 0 {
+	if l.AdditionMS >= 0 {
 		operationTimes["+"] = l.AdditionMS
 	}
-	if l.SubtractionMS > 0 {
+	if l.SubtractionMS >= 0 {
 		operationTimes["-"] = l.SubtractionMS
 	}
-	if l.MultiplicationMS > 0 {
+	if l.MultiplicationMS >= 0 {
 		operationTimes["*"] = l.MultiplicationMS
 	}
-	if l.DivisionMS > 0 {
+	if l.DivisionMS >= 0 {
 		operationTimes["/"] = l.DivisionMS
 	}
 }

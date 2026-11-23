@@ -51,10 +51,10 @@ func Load() (*Config, error) {
 		MaxExpressionLen:     intDefault("MAX_EXPRESSION_LEN", 256),
 		MaxTasksPerExpr:      intDefault("MAX_TASKS_PER_EXPR", 256),
 		MaxOperationTimeMS:   intDefault("MAX_OPERATION_TIME_MS", 30000),
-		TimeAdditionMS:       intDefault("TIME_ADDITION_MS", 100),
-		TimeSubtractionMS:    intDefault("TIME_SUBTRACTION_MS", 100),
-		TimeMultiplicationMS: intDefault("TIME_MULTIPLICATIONS_MS", 200),
-		TimeDivisionMS:       intDefault("TIME_DIVISIONS_MS", 300),
+		TimeAdditionMS:       nonNegativeIntDefault("TIME_ADDITION_MS", 100),
+		TimeSubtractionMS:    nonNegativeIntDefault("TIME_SUBTRACTION_MS", 100),
+		TimeMultiplicationMS: nonNegativeIntDefault("TIME_MULTIPLICATIONS_MS", 200),
+		TimeDivisionMS:       nonNegativeIntDefault("TIME_DIVISIONS_MS", 300),
 		MaxRetries:           intDefault("MAX_RETRIES", 5),
 		RetryBaseDelay:       durationDefault("RETRY_BASE_DELAY", 2*time.Second),
 	}
@@ -127,4 +127,18 @@ func durationDefault(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// nonNegativeIntDefault принимает 0 как осознанную настройку: время операции
+// можно отключить, чтобы вычисления шли без искусственной задержки.
+func nonNegativeIntDefault(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
 }
