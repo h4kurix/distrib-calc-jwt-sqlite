@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -44,5 +45,32 @@ func TestRateLimiter(t *testing.T) {
 	wrap(next)(w, r2)
 	if w.Code != http.StatusOK {
 		t.Fatalf("other address: got status %d, want 200", w.Code)
+	}
+}
+
+func TestRateLimiterSweepsStaleKeys(t *testing.T) {
+	old := time.Now().Add(-2 * time.Minute)
+	rl := &rateLimiter{
+		limit:     2,
+		window:    time.Minute,
+		hits:      make(map[string][]time.Time),
+		lastSweep: time.Now().Add(-time.Hour),
+	}
+	for i := 0; i < maxTrackedKeys+10; i++ {
+		key := fmt.Sprintf("10.0.%d.%d:1", i/256, i%256)
+		rl.hits[key] = []time.Time{old}
+	}
+
+	next := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/login", nil)
+	req.RemoteAddr = "192.0.2.1:1"
+	w := httptest.NewRecorder()
+	rl.wrap(next)(w, req)
+
+	if len(rl.hits) != 1 {
+		t.Fatalf("tracked keys after sweep: got %d, want 1", len(rl.hits))
+	}
+	if _, ok := rl.hits["192.0.2.1"]; !ok {
+		t.Fatal("new address was not recorded")
 	}
 }

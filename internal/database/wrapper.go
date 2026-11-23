@@ -100,6 +100,11 @@ func createTables(conn *sql.DB) error {
 			created_at TIMESTAMP NOT NULL,
 			FOREIGN KEY (user_id) REFERENCES users(id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS task_dependencies (
+			task_id TEXT NOT NULL,
+			depends_on TEXT NOT NULL,
+			PRIMARY KEY (task_id, depends_on)
+		)`,
 	}
 	for _, stmt := range statements {
 		if _, err := conn.Exec(stmt); err != nil {
@@ -133,8 +138,23 @@ func createTables(conn *sql.DB) error {
 		}
 	}
 
+	// Заполняем связи для старых баз, где зависимости хранились в arg1/arg2.
+	backfill := []string{
+		`INSERT OR IGNORE INTO task_dependencies (task_id, depends_on)
+		 SELECT id, substr(arg1, 6) FROM tasks WHERE arg1 LIKE 'task:%'`,
+		`INSERT OR IGNORE INTO task_dependencies (task_id, depends_on)
+		 SELECT id, substr(arg2, 6) FROM tasks WHERE arg2 LIKE 'task:%'`,
+	}
+	for _, stmt := range backfill {
+		if _, err := conn.Exec(stmt); err != nil {
+			return fmt.Errorf("backfill dependencies: %w", err)
+		}
+	}
+
 	// Индексы создаются после миграций: часть из них использует новые колонки.
 	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_deps_task ON task_dependencies(task_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_deps_depends ON task_dependencies(depends_on)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_expression ON tasks(expression_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_claimed_at ON tasks(claimed_at)`,

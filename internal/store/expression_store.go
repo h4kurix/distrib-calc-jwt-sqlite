@@ -51,6 +51,9 @@ func (s *Store) CreateExpressionWithTasks(ctx context.Context, id, exprText, use
 			); err != nil {
 				return fmt.Errorf("insert task %s: %w", t.ID, err)
 			}
+			if err := insertDependencies(ctx, tx, t.ID, t.Arg1, t.Arg2); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

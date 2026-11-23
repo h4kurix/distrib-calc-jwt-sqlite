@@ -73,9 +73,9 @@ func (s *Store) ClaimNextTask(ctx context.Context) (*Task, bool, error) {
 				`SELECT `+taskColumns+` FROM tasks t
 				WHERE t.status = 'pending'
 				AND NOT EXISTS (
-					SELECT 1 FROM tasks d
-					WHERE d.status != 'completed'
-					AND (d.id = substr(t.arg1, 6) OR d.id = substr(t.arg2, 6))
+					SELECT 1 FROM task_dependencies td
+					JOIN tasks d ON d.id = td.depends_on
+					WHERE td.task_id = t.id AND d.status != 'completed'
 				)
 				ORDER BY t.rowid ASC LIMIT 1`,
 			)
