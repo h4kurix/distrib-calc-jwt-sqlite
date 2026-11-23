@@ -1,7 +1,6 @@
 package store
 
 import (
-	"calc-service/pkg/database"
 	"context"
 	"database/sql"
 	"fmt"
@@ -31,12 +30,12 @@ func scanExpression(rows rowScanner) (*Expression, error) {
 }
 
 // CreateExpressionWithTasks создаёт выражение и его задачи в одной транзакции.
-func CreateExpressionWithTasks(ctx context.Context, id, exprText, userID string, tasks []*Task) (*Expression, error) {
+func (s *Store) CreateExpressionWithTasks(ctx context.Context, id, exprText, userID string, tasks []*Task) (*Expression, error) {
 	expr := &Expression{
 		ID: id, UserID: userID, Expression: exprText,
 		Status: "pending", CreatedAt: time.Now(),
 	}
-	err := database.Transaction(ctx, func(tx *sql.Tx) error {
+	err := s.db.Transaction(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO expressions (id, user_id, expression, status, created_at) VALUES (?, ?, ?, ?, ?)`,
 			expr.ID, expr.UserID, expr.Expression, expr.Status, expr.CreatedAt,
@@ -62,8 +61,8 @@ func CreateExpressionWithTasks(ctx context.Context, id, exprText, userID string,
 }
 
 // GetExpression возвращает выражение по ID. Владельца проверяет вызывающий.
-func GetExpression(ctx context.Context, id string) (*Expression, bool, error) {
-	e, err := scanExpression(database.GetDB().QueryRowContext(ctx,
+func (s *Store) GetExpression(ctx context.Context, id string) (*Expression, bool, error) {
+	e, err := scanExpression(s.db.Conn().QueryRowContext(ctx,
 		`SELECT `+exprColumns+` FROM expressions WHERE id = ?`, id,
 	))
 	if err == sql.ErrNoRows {
@@ -76,8 +75,8 @@ func GetExpression(ctx context.Context, id string) (*Expression, bool, error) {
 }
 
 // ListExpressions возвращает выражения пользователя.
-func ListExpressions(ctx context.Context, userID string) ([]*Expression, error) {
-	rows, err := database.GetDB().QueryContext(ctx,
+func (s *Store) ListExpressions(ctx context.Context, userID string) ([]*Expression, error) {
+	rows, err := s.db.Conn().QueryContext(ctx,
 		`SELECT `+exprColumns+` FROM expressions WHERE user_id = ? ORDER BY created_at DESC`, userID,
 	)
 	if err != nil {
@@ -100,8 +99,8 @@ func ListExpressions(ctx context.Context, userID string) ([]*Expression, error) 
 }
 
 // UpdateExpressionStatus обновляет статус, результат и ошибку выражения.
-func UpdateExpressionStatus(ctx context.Context, exprID, status string, result float64, errText string) error {
-	res, err := database.GetDB().ExecContext(ctx,
+func (s *Store) UpdateExpressionStatus(ctx context.Context, exprID, status string, result float64, errText string) error {
+	res, err := s.db.Conn().ExecContext(ctx,
 		`UPDATE expressions SET status = ?, result = ?, error = ? WHERE id = ?`,
 		status, result, errText, exprID,
 	)
@@ -120,9 +119,9 @@ func UpdateExpressionStatus(ctx context.Context, exprID, status string, result f
 
 // ExpireStaleExpressions закрывает выражения, которые не завершились за timeout.
 // Без этого клиент опрашивает статус вечно, если агенты недоступны.
-func ExpireStaleExpressions(ctx context.Context, timeout time.Duration) (int, error) {
+func (s *Store) ExpireStaleExpressions(ctx context.Context, timeout time.Duration) (int, error) {
 	cutoff := time.Now().Add(-timeout)
-	res, err := database.GetDB().ExecContext(ctx,
+	res, err := s.db.Conn().ExecContext(ctx,
 		`UPDATE expressions SET status = 'error', error = 'expression timed out'
 		 WHERE status IN ('pending', 'in_progress') AND created_at < ?`,
 		cutoff,

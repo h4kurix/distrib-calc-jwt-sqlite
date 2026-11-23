@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"calc-service/internal/logger"
 	"calc-service/internal/store"
-	"calc-service/pkg/logger"
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -52,7 +52,7 @@ func (d *Deps) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := store.CreateUser(r.Context(), req.Username, req.Password)
+	user, err := d.Store.CreateUser(r.Context(), req.Username, req.Password)
 	if err != nil {
 		if errors.Is(err, store.ErrUsernameExists) {
 			writeError(w, http.StatusConflict, "username already exists")
@@ -79,7 +79,7 @@ func (d *Deps) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	user, found, err := store.GetUserByUsername(r.Context(), req.Username)
+	user, found, err := d.Store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil {
 		logAndFail(w, "login lookup", err)
 		return

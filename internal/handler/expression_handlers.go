@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"calc-service/internal/calculator"
-	"calc-service/internal/store"
 )
 
 type CalculateRequest struct {
@@ -33,7 +32,7 @@ type ExpressionDetailResponse struct {
 	Expression ExpressionResponse `json:"expression"`
 }
 
-func HandleCalculate(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) HandleCalculate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
@@ -50,7 +49,7 @@ func HandleCalculate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expr, err := calculator.ProcessExpression(r.Context(), req.Expression, userID)
+	expr, err := calculator.ProcessExpression(d.Store, r.Context(), req.Expression, userID)
 	if err != nil {
 		if errors.Is(err, calculator.ErrInternal) {
 			logAndFail(w, "process expression", err)
@@ -62,7 +61,7 @@ func HandleCalculate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, CalculateResponse{ID: expr.ID})
 }
 
-func HandleExpressions(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) HandleExpressions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
@@ -72,7 +71,7 @@ func HandleExpressions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	expressions, err := store.ListExpressions(r.Context(), userID)
+	expressions, err := d.Store.ListExpressions(r.Context(), userID)
 	if err != nil {
 		logAndFail(w, "list expressions", err)
 		return
@@ -87,7 +86,7 @@ func HandleExpressions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ExpressionsResponse{Expressions: response})
 }
 
-func HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
@@ -103,7 +102,7 @@ func HandleExpressionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expr, found, err := store.GetExpression(r.Context(), id)
+	expr, found, err := d.Store.GetExpression(r.Context(), id)
 	if err != nil {
 		logAndFail(w, "get expression", err)
 		return

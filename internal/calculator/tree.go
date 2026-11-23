@@ -2,8 +2,8 @@ package calculator
 
 import (
 	"calc-service/internal/id"
+	"calc-service/internal/logger"
 	"calc-service/internal/store"
-	"calc-service/pkg/logger"
 )
 
 // Node — узел дерева выражения.

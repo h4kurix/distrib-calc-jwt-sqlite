@@ -2,8 +2,8 @@ package calculator
 
 import (
 	"calc-service/internal/id"
+	"calc-service/internal/logger"
 	"calc-service/internal/store"
-	"calc-service/pkg/logger"
 	"context"
 	"errors"
 	"fmt"
@@ -62,7 +62,7 @@ func Configure(l Limits) {
 }
 
 // ProcessExpression проверяет выражение и атомарно создаёт выражение с задачами.
-func ProcessExpression(ctx context.Context, exprStr, userID string) (*store.Expression, error) {
+func ProcessExpression(st *store.Store, ctx context.Context, exprStr, userID string) (*store.Expression, error) {
 	exprStr = strings.ReplaceAll(exprStr, " ", "")
 	if len([]rune(exprStr)) > maxExpressionLen {
 		return nil, fmt.Errorf("expression is too long (limit %d)", maxExpressionLen)
@@ -88,7 +88,7 @@ func ProcessExpression(ctx context.Context, exprStr, userID string) (*store.Expr
 		return nil, fmt.Errorf("too many operations (limit %d)", maxTasksPerExpr)
 	}
 
-	expr, err := store.CreateExpressionWithTasks(ctx, exprID, exprStr, userID, tasks)
+	expr, err := st.CreateExpressionWithTasks(ctx, exprID, exprStr, userID, tasks)
 	if err != nil {
 		logger.Error("create expression: %v", err)
 		return nil, fmt.Errorf("%w: create expression: %v", ErrInternal, err)

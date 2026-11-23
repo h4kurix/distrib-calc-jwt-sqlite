@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"calc-service/pkg/config"
+	"calc-service/internal/config"
 )
 
 type Task struct {

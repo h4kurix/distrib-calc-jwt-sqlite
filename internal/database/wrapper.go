@@ -13,16 +13,20 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
-var db *sql.DB
+// DB владеет соединением с SQLite. Экземпляр создаётся при старте сервиса
+// и передаётся в слой store явно.
+type DB struct {
+	conn *sql.DB
+}
 
-// InitDB открывает SQLite по пути из конфигурации и создаёт схему.
-func InitDB(dbPath string) error {
+// Open открывает SQLite по пути из конфигурации и создаёт схему.
+func Open(dbPath string) (*DB, error) {
 	if dbPath == "" {
-		return fmt.Errorf("DB_PATH is empty")
+		return nil, fmt.Errorf("DB_PATH is empty")
 	}
 	if dir := filepath.Dir(dbPath); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create data directory: %w", err)
+			return nil, fmt.Errorf("create data directory: %w", err)
 		}
 	}
 
@@ -31,34 +35,27 @@ func InitDB(dbPath string) error {
 	)
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return nil, fmt.Errorf("open database: %w", err)
 	}
 	conn.SetMaxOpenConns(8)
 	conn.SetMaxIdleConns(4)
 
 	if err := conn.Ping(); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("ping database: %w", err)
+		return nil, fmt.Errorf("ping database: %w", err)
 	}
 	if err := createTables(conn); err != nil {
 		_ = conn.Close()
-		return fmt.Errorf("create tables: %w", err)
+		return nil, fmt.Errorf("create tables: %w", err)
 	}
-
-	db = conn
-	return nil
+	return &DB{conn: conn}, nil
 }
 
-func CloseDB() error {
-	if db == nil {
-		return nil
-	}
-	err := db.Close()
-	db = nil
-	return err
-}
+// Close закрывает соединение.
+func (d *DB) Close() error { return d.conn.Close() }
 
-func GetDB() *sql.DB { return db }
+// Conn возвращает соединение для запросов store.
+func (d *DB) Conn() *sql.DB { return d.conn }
 
 func createTables(conn *sql.DB) error {
 	statements := []string{
@@ -185,12 +182,12 @@ func columnExists(conn *sql.DB, table, column string) (bool, error) {
 // Transaction выполняет fn в транзакции с откатом при ошибке или панике.
 // При SQLITE_BUSY транзакция повторяется: fn не имеет побочных эффектов вне tx.
 // Ожидание между попытками прерывается по ctx.
-func Transaction(ctx context.Context, fn func(*sql.Tx) error) (err error) {
+func (d *DB) Transaction(ctx context.Context, fn func(*sql.Tx) error) (err error) {
 	for attempt := 0; attempt < 5; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err = runTransaction(ctx, fn)
+		err = d.runTransaction(ctx, fn)
 		if err == nil || !isBusy(err) {
 			return err
 		}
@@ -204,8 +201,8 @@ func Transaction(ctx context.Context, fn func(*sql.Tx) error) (err error) {
 	return err
 }
 
-func runTransaction(ctx context.Context, fn func(*sql.Tx) error) (err error) {
-	tx, err := db.BeginTx(ctx, nil)
+func (d *DB) runTransaction(ctx context.Context, fn func(*sql.Tx) error) (err error) {
+	tx, err := d.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

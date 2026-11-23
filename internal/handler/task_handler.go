@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"calc-service/internal/calculator"
+	"calc-service/internal/logger"
 	"calc-service/internal/store"
-	"calc-service/pkg/logger"
 )
 
 type TaskResponse struct {
@@ -30,19 +30,19 @@ const (
 )
 
 // TaskHandler обрабатывает выдачу задач и приём результатов.
-func TaskHandler(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) TaskHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		handleGetTask(w, r.Context())
+		d.handleGetTask(w, r.Context())
 	case http.MethodPost:
-		handlePostTaskResult(w, r)
+		d.handlePostTaskResult(w, r)
 	default:
 		writeMethodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 	}
 }
 
-func handleGetTask(w http.ResponseWriter, ctx context.Context) {
-	task, found, err := store.ClaimNextTask(ctx)
+func (d *Deps) handleGetTask(w http.ResponseWriter, ctx context.Context) {
+	task, found, err := d.Store.ClaimNextTask(ctx)
 	if err != nil {
 		logAndFail(w, "claim task", err)
 		return
@@ -56,14 +56,14 @@ func handleGetTask(w http.ResponseWriter, ctx context.Context) {
 	writeJSON(w, http.StatusOK, TaskResponse{Task: task})
 }
 
-func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 	var req TaskResultRequest
 	if err := decodeJSONBody(w, r, &req); err != nil || req.ID == "" {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
-	task, found, err := store.GetTask(r.Context(), req.ID)
+	task, found, err := d.Store.GetTask(r.Context(), req.ID)
 	if err != nil {
 		logAndFail(w, "get task", err)
 		return
@@ -72,12 +72,12 @@ func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	if err := store.CompleteTask(r.Context(), req.ID, req.Result); err != nil {
+	if err := d.Store.CompleteTask(r.Context(), req.ID, req.Result); err != nil {
 		logAndFail(w, "complete task", err)
 		return
 	}
 
-	if err := finalizeExpression(r.Context(), task.ExpressionID, task.UserID); err != nil {
+	if err := d.finalizeExpression(r.Context(), task.ExpressionID, task.UserID); err != nil {
 		logAndFail(w, "finalize expression "+task.ExpressionID, err)
 		return
 	}
@@ -85,12 +85,12 @@ func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 }
 
 // finalizeExpression обновляет статус выражения в одной транзакции.
-func finalizeExpression(ctx context.Context, exprID, userID string) error {
-	return store.FinalizeExpression(ctx, exprID, userID, calculator.AggregateResults)
+func (d *Deps) finalizeExpression(ctx context.Context, exprID, userID string) error {
+	return d.Store.FinalizeExpression(ctx, exprID, userID, calculator.AggregateResults)
 }
 
 // HandleTaskByID возвращает результат задачи владельцу.
-func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
@@ -105,7 +105,7 @@ func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	task, found, err := store.GetTask(r.Context(), id)
+	task, found, err := d.Store.GetTask(r.Context(), id)
 	if err != nil {
 		logAndFail(w, "get task", err)
 		return
@@ -124,7 +124,7 @@ func HandleTaskByID(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleTaskFailure принимает сообщение об ошибке вычисления задачи.
-func HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
@@ -134,7 +134,7 @@ func HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	task, found, err := store.GetTask(r.Context(), req.ID)
+	task, found, err := d.Store.GetTask(r.Context(), req.ID)
 	if err != nil {
 		logAndFail(w, "get task", err)
 		return
@@ -143,11 +143,11 @@ func HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	if err := store.FailTask(r.Context(), req.ID, req.Error); err != nil {
+	if err := d.Store.FailTask(r.Context(), req.ID, req.Error); err != nil {
 		logAndFail(w, "fail task "+req.ID, err)
 		return
 	}
-	if err := finalizeExpression(r.Context(), task.ExpressionID, task.UserID); err != nil {
+	if err := d.finalizeExpression(r.Context(), task.ExpressionID, task.UserID); err != nil {
 		logAndFail(w, "finalize expression "+task.ExpressionID, err)
 		return
 	}
@@ -155,7 +155,7 @@ func HandleTaskFailure(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleInternalTaskByID отдаёт результат задачи агенту по внутреннему API.
-func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
+func (d *Deps) HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
@@ -165,7 +165,7 @@ func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	task, found, err := store.GetTask(r.Context(), id)
+	task, found, err := d.Store.GetTask(r.Context(), id)
 	if err != nil {
 		logAndFail(w, "get task", err)
 		return
@@ -181,8 +181,8 @@ func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 
 // ProcessPendingTasks выполняет обслуживание очереди: возвращает зависшие
 // задачи и закрывает выражения, которые уже не могут завершиться.
-func ProcessPendingTasks(ctx context.Context) {
-	n, err := store.ReleaseStaleTasks(ctx, staleTaskTimeout)
+func (d *Deps) ProcessPendingTasks(ctx context.Context) {
+	n, err := d.Store.ReleaseStaleTasks(ctx, staleTaskTimeout)
 	if err != nil {
 		logger.Error("release stale tasks: %v", err)
 		return
@@ -191,7 +191,7 @@ func ProcessPendingTasks(ctx context.Context) {
 		logger.Warn("released %d stale tasks", n)
 	}
 
-	expired, err := store.ExpireStaleExpressions(ctx, expressionTimeout)
+	expired, err := d.Store.ExpireStaleExpressions(ctx, expressionTimeout)
 	if err != nil {
 		logger.Error("expire stale expressions: %v", err)
 		return

@@ -2,7 +2,6 @@ package store
 
 import (
 	"calc-service/internal/id"
-	"calc-service/pkg/database"
 	"context"
 	"database/sql"
 	"errors"
@@ -23,7 +22,7 @@ type User struct {
 }
 
 // CreateUser создаёт нового пользователя.
-func CreateUser(ctx context.Context, username, password string) (*User, error) {
+func (s *Store) CreateUser(ctx context.Context, username, password string) (*User, error) {
 	if username == "" || len(username) > 64 {
 		return nil, fmt.Errorf("username must be 1-64 characters")
 	}
@@ -31,7 +30,7 @@ func CreateUser(ctx context.Context, username, password string) (*User, error) {
 		return nil, fmt.Errorf("password must be at least 8 characters")
 	}
 
-	exists, err := UsernameExists(ctx, username)
+	exists, err := s.UsernameExists(ctx, username)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +49,7 @@ func CreateUser(ctx context.Context, username, password string) (*User, error) {
 		Password:  string(hash),
 		CreatedAt: time.Now(),
 	}
-	_, err = database.GetDB().ExecContext(ctx,
+	_, err = s.db.Conn().ExecContext(ctx,
 		`INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)`,
 		user.ID, user.Username, user.Password, user.CreatedAt,
 	)
@@ -60,9 +59,9 @@ func CreateUser(ctx context.Context, username, password string) (*User, error) {
 	return user, nil
 }
 
-func UsernameExists(ctx context.Context, username string) (bool, error) {
+func (s *Store) UsernameExists(ctx context.Context, username string) (bool, error) {
 	var exists bool
-	err := database.GetDB().QueryRowContext(ctx,
+	err := s.db.Conn().QueryRowContext(ctx,
 		`SELECT EXISTS(SELECT 1 FROM users WHERE username = ? LIMIT 1)`, username,
 	).Scan(&exists)
 	if err != nil {
@@ -72,9 +71,9 @@ func UsernameExists(ctx context.Context, username string) (bool, error) {
 }
 
 // GetUserByUsername возвращает пользователя. Ошибка БД отделена от «не найдено».
-func GetUserByUsername(ctx context.Context, username string) (*User, bool, error) {
+func (s *Store) GetUserByUsername(ctx context.Context, username string) (*User, bool, error) {
 	var u User
-	err := database.GetDB().QueryRowContext(ctx,
+	err := s.db.Conn().QueryRowContext(ctx,
 		`SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username,
 	).Scan(&u.ID, &u.Username, &u.Password, &u.CreatedAt)
 	if err == sql.ErrNoRows {

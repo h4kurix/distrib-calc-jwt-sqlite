@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"calc-service/internal/calculator"
+	"calc-service/internal/config"
+	"calc-service/internal/database"
 	"calc-service/internal/handler"
-	"calc-service/pkg/config"
-	"calc-service/pkg/database"
-	"calc-service/pkg/logger"
+	"calc-service/internal/logger"
+	"calc-service/internal/store"
 )
 
 func main() {
@@ -28,7 +29,6 @@ func main() {
 	}
 	defer logger.Sync()
 
-	deps := handler.NewDeps(cfg.JWTSecret, cfg.AgentTokenTTL, cfg.UserTokenTTL)
 	calculator.Configure(calculator.Limits{
 		MaxExpressionLen: cfg.MaxExpressionLen,
 		MaxTasksPerExpr:  cfg.MaxTasksPerExpr,
@@ -39,15 +39,17 @@ func main() {
 		DivisionMS:       cfg.TimeDivisionMS,
 	})
 
-	if err := database.InitDB(cfg.DBPath); err != nil {
+	db, err := database.Open(cfg.DBPath)
+	if err != nil {
 		logger.Error("database error: %v", err)
 		log.Fatal(err)
 	}
 	defer func() {
-		if err := database.CloseDB(); err != nil {
+		if err := db.Close(); err != nil {
 			logger.Error("close database: %v", err)
 		}
 	}()
+	deps := handler.NewDeps(store.New(db), cfg.JWTSecret, cfg.AgentTokenTTL, cfg.UserTokenTTL)
 
 	mux := http.NewServeMux()
 	// Ограничиваем только публичные роуты аутентификации: bcrypt на каждый
@@ -62,17 +64,17 @@ func main() {
 	user := func(h http.HandlerFunc) http.Handler {
 		return deps.AuthMiddleware(h)
 	}
-	mux.Handle("/api/v1/calculate", user(handler.HandleCalculate))
-	mux.Handle("/api/v1/expressions", user(handler.HandleExpressions))
-	mux.Handle("/api/v1/expressions/{id}", user(handler.HandleExpressionByID))
-	mux.Handle("/api/v1/tasks/{id}", user(handler.HandleTaskByID))
+	mux.Handle("/api/v1/calculate", user(deps.HandleCalculate))
+	mux.Handle("/api/v1/expressions", user(deps.HandleExpressions))
+	mux.Handle("/api/v1/expressions/{id}", user(deps.HandleExpressionByID))
+	mux.Handle("/api/v1/tasks/{id}", user(deps.HandleTaskByID))
 
 	agent := func(h http.HandlerFunc) http.Handler {
 		return deps.AgentAuthMiddleware(h)
 	}
-	mux.Handle("/internal/task", agent(handler.TaskHandler))
-	mux.Handle("/internal/task/result/{id}", agent(handler.HandleInternalTaskByID))
-	mux.Handle("/internal/task/fail", agent(handler.HandleTaskFailure))
+	mux.Handle("/internal/task", agent(deps.TaskHandler))
+	mux.Handle("/internal/task/result/{id}", agent(deps.HandleInternalTaskByID))
+	mux.Handle("/internal/task/fail", agent(deps.HandleTaskFailure))
 	mux.HandleFunc("/internal/agent/token", func(w http.ResponseWriter, r *http.Request) {
 		handleAgentToken(w, r, cfg, deps)
 	})
@@ -105,7 +107,7 @@ func main() {
 	if maintenanceInterval < 2*time.Second {
 		maintenanceInterval = 2 * time.Second
 	}
-	go startMaintenance(ctx, maintenanceInterval)
+	go startMaintenance(ctx, maintenanceInterval, deps)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -131,7 +133,7 @@ func main() {
 	}
 }
 
-func startMaintenance(ctx context.Context, interval time.Duration) {
+func startMaintenance(ctx context.Context, interval time.Duration, deps *handler.Deps) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -146,7 +148,7 @@ func startMaintenance(ctx context.Context, interval time.Duration) {
 						logger.Error("maintenance panic: %v", p)
 					}
 				}()
-				handler.ProcessPendingTasks(ctx)
+				deps.ProcessPendingTasks(ctx)
 			}()
 		}
 	}

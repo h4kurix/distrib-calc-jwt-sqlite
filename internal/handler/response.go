@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"calc-service/pkg/logger"
+	"calc-service/internal/logger"
 )
 
 // maxBodyBytes ограничивает тело запроса: API принимает только короткий JSON.

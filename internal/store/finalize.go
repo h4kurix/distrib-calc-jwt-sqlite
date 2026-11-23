@@ -1,7 +1,6 @@
 package store
 
 import (
-	"calc-service/pkg/database"
 	"context"
 	"database/sql"
 	"fmt"
@@ -10,8 +9,8 @@ import (
 // FinalizeExpression обновляет статус выражения в одной транзакции.
 // aggregate вызывается внутри транзакции, поэтому счётчики и результат
 // всегда соответствуют одному и тому же снимку задач.
-func FinalizeExpression(ctx context.Context, exprID, userID string, aggregate func([]*Task) (float64, error)) error {
-	return database.Transaction(ctx, func(tx *sql.Tx) error {
+func (s *Store) FinalizeExpression(ctx context.Context, exprID, userID string, aggregate func([]*Task) (float64, error)) error {
+	return s.db.Transaction(ctx, func(tx *sql.Tx) error {
 		var status string
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM expressions WHERE id = ?`, exprID).Scan(&status); err != nil {
 			return fmt.Errorf("expression %s: %w", exprID, err)
