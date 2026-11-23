@@ -215,12 +215,19 @@ func CompleteTask(taskID string, result float64) error {
 
 // FailTask отмечает задачу как ошибочную.
 func FailTask(taskID, errText string) error {
-	_, err := database.GetDB().Exec(
+	res, err := database.GetDB().Exec(
 		`UPDATE tasks SET status = 'error', error = ?, claimed_at = NULL WHERE id = ? AND status = 'claimed'`,
 		errText, taskID,
 	)
 	if err != nil {
 		return fmt.Errorf("fail task: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("fail task rows: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("task %s is not claimed", taskID)
 	}
 	return nil
 }

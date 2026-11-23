@@ -4,6 +4,9 @@ services:
       context: .
       dockerfile: Dockerfile.orchestrator
     env_file: .env
+    environment:
+      # Внутренний порт фиксирован. PORT снаружи меняет только маппинг.
+      - PORT=8080
     ports:
       - "${PORT:-8080}:8080"
     volumes:

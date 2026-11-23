@@ -82,40 +82,9 @@ func handlePostTaskResult(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// finalizeExpression обновляет статус выражения после завершения задачи.
+// finalizeExpression обновляет статус выражения в одной транзакции.
 func finalizeExpression(exprID, userID string) error {
-	failed, err := store.CountFailedTasks(exprID)
-	if err != nil {
-		return err
-	}
-	if failed > 0 {
-		return store.UpdateExpressionStatus(exprID, "error", 0, "one or more tasks failed")
-	}
-
-	incomplete, err := store.CountIncompleteTasks(exprID)
-	if err != nil {
-		return err
-	}
-	if incomplete > 0 {
-		expr, found, err := store.GetExpression(exprID)
-		if err != nil {
-			return err
-		}
-		if found && expr.Status == "pending" {
-			return store.UpdateExpressionStatus(exprID, "in_progress", 0, "")
-		}
-		return nil
-	}
-
-	tasks, err := store.GetTasksByExpression(exprID, userID)
-	if err != nil {
-		return err
-	}
-	result, err := calculator.AggregateResults(tasks)
-	if err != nil {
-		return store.UpdateExpressionStatus(exprID, "error", 0, err.Error())
-	}
-	return store.UpdateExpressionStatus(exprID, "completed", result, "")
+	return store.FinalizeExpression(exprID, userID, calculator.AggregateResults)
 }
 
 // HandleTaskByID возвращает результат задачи владельцу.
@@ -209,7 +178,7 @@ func HandleInternalTaskByID(w http.ResponseWriter, r *http.Request) {
 }
 
 // ProcessPendingTasks выполняет только обслуживание очереди. Финализация
-// выражений делается в handlePostTaskResult, поэтому гонки с тикером нет.
+// выражений делается в handlePostTaskResult в одной транзакции.
 func ProcessPendingTasks() {
 	n, err := store.ReleaseStaleTasks(staleTaskTimeout)
 	if err != nil {

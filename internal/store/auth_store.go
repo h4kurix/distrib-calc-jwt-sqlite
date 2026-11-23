@@ -2,12 +2,17 @@ package store
 
 import (
 	"calc-service/pkg/database"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+var ErrUsernameExists = errors.New("username already exists")
 
 // User представляет пользователя.
 type User struct {
@@ -31,7 +36,7 @@ func CreateUser(username, password string) (*User, error) {
 		return nil, err
 	}
 	if exists {
-		return nil, fmt.Errorf("username already exists")
+		return nil, ErrUsernameExists
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -108,9 +113,10 @@ func NewSession(userID string) (*Session, error) {
 		CreatedAt: now,
 		ExpiresAt: now.Add(24 * time.Hour),
 	}
+	hash := sha256.Sum256([]byte(s.ID))
 	_, err := database.GetDB().Exec(
-		`INSERT INTO sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
-		s.ID, s.UserID, s.CreatedAt, s.ExpiresAt,
+		`INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		s.ID, s.UserID, hex.EncodeToString(hash[:]), s.CreatedAt, s.ExpiresAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert session: %w", err)

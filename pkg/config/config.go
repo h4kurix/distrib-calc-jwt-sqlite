@@ -60,9 +60,12 @@ func (c *Config) validate() error {
 	if secret == "" {
 		return fmt.Errorf("JWT_SECRET is required")
 	}
-	for _, bad := range []string{"change-me", "super_secret_key", "insecure-default-secret", "replace", "example", "placeholder"} {
-		if strings.Contains(secret, bad) {
-			return fmt.Errorf("JWT_SECRET contains a placeholder value")
+	for _, bad := range []string{
+		"change-me", "super_secret_key", "insecure-default-secret",
+		"replace-with-a-long-random-secret", "replace-with-another-long-random-key",
+	} {
+		if secret == bad {
+			return fmt.Errorf("JWT_SECRET is a known placeholder")
 		}
 	}
 	if len(secret) < 16 {
